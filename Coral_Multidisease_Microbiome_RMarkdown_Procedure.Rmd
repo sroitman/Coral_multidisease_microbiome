@@ -1,0 +1,4598 @@
+---
+title: "MulDis_16S_QIIME2"
+author: "Sofia Roitman"
+date: "8/25/2020"
+output: html_document
+---
+
+# Set working directory
+```{r}
+setwd("")
+```
+
+
+# Load dependencies
+```{r message=FALSE, error=FALSE}
+# libraries and functions
+library(tidyverse)
+library(RVAideMemoire)
+library(vegan)
+library(BiocManager)
+library(phyloseq) 
+library(rhdf5)
+library(biomformat)
+library(microbiome)
+library(dplyr) 
+library(gcookbook)
+library(tidyverse)
+library(ape)
+library(Biostrings) 
+library(Hmisc) 
+library(yaml) 
+library(tidyr) 
+library(stats) 
+library(utils) 
+library(qiime2R)
+library(genefilter)
+library(magrittr)
+library(DESeq2)
+library(plyr)
+library(data.table)
+library(phytools)
+library(stringi)
+library(ggpubr)
+library(vegan)
+library(microbiomeSeq)
+
+```
+
+# Importing QIIME2 results using qiime2R
+## Following: https://forum.qiime2.org/t/tutorial-integrating-qiime2-and-r-for-data-visualization-and-analysis-using-qiime2r/4121
+### Creating a Phyloseq object
+```{r}
+physeq<-qza_to_phyloseq(
+    features="merged_dada2_table.qza",
+    tree="merged_rooted-tree.qza",
+    taxonomy="515_806_merged_taxonomy.qza",
+    metadata = "QIIME2_16S_Mapping_TijanaFileCorrections2021_ExtrasRemoved_NoSkeleton.tsv"
+    )
+physeq
+
+```
+
+
+# Clean data
+```{r}
+# Remove features that have only been classigied at the kingdom level
+physeq_clean <- subset_taxa(physeq, Phylum != "NA")
+
+# Remove chloroplast and mitochondria
+physeq_nochlornomito = subset_taxa(physeq_clean, 
+                             Family  != "mitochondria" & 
+                               Class   != "Chloroplast")
+
+# There are samples for which there are no observed OTUs. Let's remove those.
+physeq_no0 = prune_samples(sample_sums(physeq_nochlornomito)>=50, physeq_nochlornomito)
+```
+
+
+# Replace NAs in tax table
+```{r}
+tax2 <- data.frame(tax_table(physeq_no0))
+tax.clean <- data.frame(row.names = row.names(tax2), 
+                        Kingdom = tax2[,1],
+                        Phylum = tax2[,2],
+                        Class = tax2[,3],
+                        Order = tax2[,4],
+                        Family = tax2[,5],
+                        Genus = tax2[,6],
+                        Species = tax2[,7],
+                        stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+####### Fill holes in the tax table
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,2] == ""){
+    kingdom <- paste("Kingdom_", tax.clean[i,1], sep = "")
+    tax.clean[i, 2:7] <- kingdom
+    } else if (tax.clean[i,3] == ""){
+      phylum <- paste("Phylum_", tax.clean[i,2], sep = "")
+      tax.clean[i, 3:7] <- phylum
+      } else if (tax.clean[i,4] == ""){
+        class <- paste("Class_", tax.clean[i,3], sep = "")
+        tax.clean[i, 4:7] <- class
+        } else if (tax.clean[i,5] == ""){
+          order <- paste("Order_", tax.clean[i,4], sep = "")
+          tax.clean[i, 5:7] <- order
+          } else if (tax.clean[i,6] == ""){
+            family <- paste("Family_", tax.clean[i,5], sep = "")
+            tax.clean[i, 6:7] <- family
+            } else if (tax.clean[i,7] == ""){
+              tax.clean$Species[i] <- paste("Genus",tax.clean$Genus[i], sep = "_")
+            }
+}
+
+physeq_no0_taxfix <- physeq_no0
+tax_table(physeq_no0_taxfix) <- as.matrix(tax.clean)
+```
+
+
+# SUBSETTING
+## Create coral only object
+```{r}
+# ONLY CORAL SAMPLES
+nowat = subset_samples(physeq_no0_taxfix, Species != "Water")
+nosed = subset_samples(nowat, Species != "Sediment")
+## Rename final file
+sub_coral <- nosed
+
+## Rename sub all object
+sub_all <- physeq_no0_taxfix
+
+# Just to be safe, once again, remove any samples with no counts or ASVs with no counts
+## Sub all
+sub_all_no0_1 <- prune_samples(sample_sums(sub_all)>=50, sub_all)
+sub_all_no0 <- prune_taxa(taxa_sums(sub_all_no0_1)> 0, sub_all_no0_1) 
+
+## Sub coral
+sub_coral_no0_1 <- prune_samples(sample_sums(sub_coral)>=50, sub_coral)
+sub_coral_no0 <- prune_taxa(taxa_sums(sub_coral_no0_1)> 0, sub_coral_no0_1) 
+
+print("total")
+sum(sample_sums(sub_all_no0))
+print("min")
+min(sample_sums(sub_all_no0))
+print("mean")
+mean(sample_sums(sub_all_no0))
+print("median")
+median(sample_sums(sub_all_no0))
+print("max")
+max(sample_sums(sub_all_no0))
+
+print("total")
+sum(sample_sums(sub_coral_no0))
+print("min")
+min(sample_sums(sub_coral_no0))
+print("mean")
+mean(sample_sums(sub_coral_no0))
+print("median")
+median(sample_sums(sub_coral_no0))
+print("max")
+max(sample_sums(sub_coral_no0))
+ntaxa(sub_coral_no0)
+nsamples(sub_coral_no0)
+
+```
+
+## Subsetting by metadata criteria
+### HH
+```{r}
+# HH ONLY
+HH = subset_samples(sub_all_no0, Health_State == "H")
+## HH x REGION
+HH_PM = subset_samples(HH, Region == "PM")
+HH_USVI = subset_samples(HH, Region == "USVI")
+## HH x SPECIES
+HH_ofav = subset_samples(HH, Species == "Ofav")
+HH_apal = subset_samples(HH, Species == "Apal")
+## HH x YEAR
+HH_2008 = subset_samples(HH, Collection_Year == "2008")
+HH_2010 = subset_samples(HH, Collection_Year == "2010")
+HH_2011 = subset_samples(HH, Collection_Year == "2011")
+HH_2013 = subset_samples(HH, Collection_Year == "2013")
+## HH x REGION x SPECIES
+HH_USVI_ofav <- subset_samples(HH_USVI, Species == "Ofav")
+### Apal is only in USVI in 2011 so not necessary
+## HH x REGION x YEAR
+HH_PM_2008 = subset_samples(HH_2008, Region == "PM")
+HH_PM_2010 = subset_samples(HH_2010, Region == "PM")
+HH_USVI_2013 = subset_samples(HH_2013, Region == "USVI")
+HH_USVI_2011 = subset_samples(HH_USVI_ofav, Collection_Year == "2011")
+### Curacao only collected in 1 year for 1 species so it's fine
+
+# HH & HD
+HH_HD1 = subset_samples(sub_all_no0, Health_State != "YBD")
+HH_HD2 = subset_samples(HH_HD1, Health_State != "WPx")
+HH_HD3 = subset_samples(HH_HD2, Health_State != "WB")
+HH_HD = subset_samples(HH_HD3, Health_State != "WPl")
+## HH & HD x REGION
+HH_HD_PM = subset_samples(HH_HD, Region == "PM")
+HH_HD_USVI = subset_samples(HH_HD, Region == "USVI")
+## HH & HD x SPECIES
+HH_HD_ofav = subset_samples(HH_HD, Species == "Ofav")
+HH_HD_apal = subset_samples(HH_HD, Species == "Apal")
+## HH x YEAR
+HH_HD_2008 = subset_samples(HH_HD, Collection_Year == "2008")
+HH_HD_2010 = subset_samples(HH_HD, Collection_Year == "2010")
+HH_HD_2011 = subset_samples(HH_HD, Collection_Year == "2011")
+HH_HD_2013 = subset_samples(HH_HD, Collection_Year == "2013")
+```
+
+### D
+```{r}
+# ONLY D
+D1 = subset_samples(sub_coral_no0, Health_State != "YBD_HD")
+D2 = subset_samples(D1, Health_State != "WPx_HD")
+D3 = subset_samples(D2, Health_State != "WB_HD")
+D = subset_samples(D3, Health_State != "WPl_HD")
+## D x REGION
+D_PM = subset_samples(D, Region == "PM")
+D_USVI = subset_samples(D, Region == "USVI")
+## D x SPECIES
+D_ofav = subset_samples(D, Species == "Ofav")
+D_apal = subset_samples(D, Species == "Apal")
+## D x YEAR
+D_2008 = subset_samples(D, Collection_Year == "2008")
+D_2010 = subset_samples(D, Collection_Year == "2010")
+D_2011 = subset_samples(D, Collection_Year == "2011")
+D_2013 = subset_samples(D, Collection_Year == "2013")
+
+# D & HD
+D_HD = subset_samples(sub_coral_no0, Health_State != "H")
+## D & HD x REGION
+D_HD_PM = subset_samples(D_HD, Region == "PM")
+D_HD_USVI = subset_samples(D_HD, Region == "USVI")
+## D & HD x SPECIES
+D_HD_ofav = subset_samples(D_HD, Species == "Ofav")
+D_HD_apal = subset_samples(D_HD, Species == "Apal")
+## D & HD  x YEAR
+D_HD_2008 = subset_samples(D_HD, Collection_Year == "2008")
+D_HD_2010 = subset_samples(D_HD, Collection_Year == "2010")
+D_HD_2011 = subset_samples(D_HD, Collection_Year == "2011")
+D_HD_2013 = subset_samples(D_HD, Collection_Year == "2013")
+```
+
+### By species/sample type
+```{r}
+ofav = subset_samples(sub_coral_no0, Species == "Ofav")
+apal = subset_samples(sub_coral_no0, Species == "Apal")
+
+h2o = subset_samples(sub_all_no0, Species == "Water")
+sed = subset_samples(sub_all_no0, Species == "Sediment")
+```
+
+
+### By disease
+```{r}
+# D only
+YBD = subset_samples(sub_coral_no0, Health_State == "YBD")
+WPL = subset_samples(sub_coral_no0, Health_State == "WPl")
+Wpox = subset_samples(sub_coral_no0, Health_State == "WPx")
+WBD = subset_samples(sub_coral_no0, Health_State == "WB")
+
+# HD only
+YBD_HD = subset_samples(sub_coral_no0, Health_State == "YBD_HD")
+WPL_HD = subset_samples(sub_coral_no0, Health_State == "WPl_HD")
+Wpox_HD = subset_samples(sub_coral_no0, Health_State == "WPx_HD")
+WBD_HD = subset_samples(sub_coral_no0, Health_State == "WB_HD")
+
+# D & HD
+## YBD
+### Coral only
+YBD_DHD1 = subset_samples(ofav, Health_State != "WPl")
+YBD_DHD2 = subset_samples(YBD_DHD1, Health_State != "WPl_HD")
+YBD_DHD = subset_samples(YBD_DHD2, Health_State != "H")
+## WPL
+WPL_DHD1 = subset_samples(ofav, Health_State != "YBD")
+WPL_DHD2 = subset_samples(WPL_DHD1, Health_State != "YBD_HD")
+WPL_DHD = subset_samples(WPL_DHD2, Health_State != "H")
+## WBD
+WBD_DHD1 = subset_samples(apal, Health_State != "WPx")
+WBD_DHD2 = subset_samples(WBD_DHD1, Health_State != "WPx_HD")
+WBD_DHD = subset_samples(WBD_DHD2, Health_State != "H")
+## Wpox
+Wpox_DHD1 = subset_samples(apal, Health_State != "WB")
+Wpox_DHD2 = subset_samples(Wpox_DHD1, Health_State != "WB_HD")
+Wpox_DHD = subset_samples(Wpox_DHD2, Health_State != "H")
+
+
+# HH & D & HD
+YBD_HHDHD <- YBD_DHD2
+WPL_HHDHD <- WPL_DHD2
+WBD_HHDHD <- WBD_DHD2
+Wpox_HHDHD <- Wpox_DHD2
+
+# HH & D
+YBD_HH <- subset_samples(YBD_HHDHD, Health_State != "YBD_HD")
+WPL_HH <- subset_samples(WPL_HHDHD, Health_State != "WPl_HD")
+WBD_HH <- subset_samples(WBD_HHDHD, Health_State != "WB_HD")
+Wpox_HH <- subset_samples(Wpox_HHDHD, Health_State != "WPx_HD")
+
+# Ofav YBD by region + year
+YBD_HH_PM2008 <- subset_samples(YBD_HH, Collection_Year == "2008")
+YBD_HH_PM2010 <- subset_samples(YBD_HH, Collection_Year == "2010")
+YBD_HH_USVI2013 <- subset_samples(YBD_HH, Collection_Year == "2013")
+YBD_HH_USVI2011_1 <- subset_samples(YBD_HH, Region == "USVI")
+YBD_HH_USVI2011 <- subset_samples(YBD_HH_USVI2011_1, Collection_Year == "2011")
+
+# Ofav WPL by region x year
+##WPL_HH_PM2008 <- subset_samples(WPL_HH, Collection_Year == "2008") # 4 samples, not worth it
+WPL_HH_PM2010 <- subset_samples(WPL_HH, Collection_Year == "2010")
+WPL_HH_USVI2013 <- subset_samples(WPL_HH, Collection_Year == "2013") # 9 samples
+WPL_HH_USVI2011_1 <- subset_samples(WPL_HH, Region == "USVI")
+WPL_HH_USVI2011 <- subset_samples(WPL_HH_USVI2011_1, Collection_Year == "2011")
+
+
+# Ofav YBD HHDHD by region x year
+YBD_HHDHD_PM2008 <- subset_samples(YBD_HHDHD, Collection_Year == "2008")
+YBD_HHDHD_PM2010 <- subset_samples(YBD_HHDHD, Collection_Year == "2010")
+YBD_HHDHD_USVI2013 <- subset_samples(YBD_HHDHD, Collection_Year == "2013")
+YBD_HHDHD_2011 <- subset_samples(YBD_HHDHD, Collection_Year == "2011")
+YBD_HHDHD_USVI2011 <- subset_samples(YBD_HHDHD_2011, Region == "USVI")
+
+# Ofav WPL HHDHD by region x year
+WPL_HHDHD_PM2010 <- subset_samples(WPL_HHDHD, Collection_Year == "2010")
+WPL_HHDHD_USVI2013 <- subset_samples(WPL_HHDHD, Collection_Year == "2013")
+WPL_HHDHD_2011 <- subset_samples(WPL_HHDHD, Collection_Year == "2011")
+WPL_HHDHD_USVI2011 <- subset_samples(WPL_HHDHD_2011, Region == "USVI")
+
+```
+
+
+### By region
+```{r}
+# Coral only
+PM_cor = subset_samples(sub_coral_no0, Region == "PM")
+USVI_cor = subset_samples(sub_coral_no0, Region == "USVI")
+
+# Coral, water, sediment
+PM_all = subset_samples(sub_all_no0, Region == "PM")
+USVI_all = subset_samples(sub_all_no0, Region == "USVI")
+
+```
+
+### Region x year
+```{r}
+# Coral only
+## PM
+PM_cor_2010 = subset_samples(PM_cor, Collection_Year == "2010")
+PM_cor_2008 = subset_samples(PM_cor, Collection_Year == "2008")
+## USVI
+USVI_cor_2013 = subset_samples(USVI_cor, Collection_Year == "2013")
+USVI_cor_2011 = subset_samples(USVI_cor, Collection_Year == "2011")
+
+
+# Coral, water, sediment
+## PM
+PM_all_2010 = subset_samples(PM_all, Collection_Year == "2010")
+PM_all_2008 = subset_samples(PM_all, Collection_Year == "2008")
+## USVI
+USVI_all_2013 = subset_samples(USVI_all, Collection_Year == "2013")
+USVI_all_2011 = subset_samples(USVI_all, Collection_Year == "2011")
+
+# PM 2010 by more specific timepoints
+## Early August/September
+PM_2010_early1 = subset_samples(PM_cor_2010, Collection_Day != "21")
+PM_2010_early2 = subset_samples(PM_2010_early1, Collection_Day != "22")
+PM_2010_early = subset_samples(PM_2010_early2, Collection_Day != "23")
+## Late September
+late = c("21","22","23")
+PM_2010_late = subset_samples(PM_cor_2010, Collection_Day %in% late)
+
+# PM 2010 by location
+PM_2010_boc = subset_samples(PM_cor_2010, Location == "Bocana")
+PM_2010_jar = subset_samples(PM_cor_2010, Location == "Jardines")
+PM_2010_pic = subset_samples(PM_cor_2010, Location == "Picudas")
+
+```
+
+
+
+### Region x year x species
+```{r}
+# Ofav
+## PM
+PM_2010_ofav = subset_samples(PM_cor_2010, Species == "Ofav")
+PM_2008_ofav = subset_samples(PM_cor_2008, Species == "Ofav")
+## USVI
+USVI_2013_ofav = subset_samples(USVI_cor_2013, Species == "Ofav")
+USVI_2011_ofav = subset_samples(USVI_cor_2011, Species == "Ofav")
+HH_USVI_2011_ofav = subset_samples(USVI_2011_ofav, Health_State == "H")
+
+# Apal
+## USVI
+USVI_2011_apal = subset_samples(USVI_cor_2011, Species == "Apal")
+HH_USVI_2011_apal = subset_samples(USVI_2011_apal, Health_State == "H")
+
+```
+
+
+# DISTANCE MATRICES
+## Bray Curtis and Unweighted Unifrac
+### Basic unsubsetted datasets
+```{r}
+# Sub coral
+bray_subcoral <- phyloseq::distance(sub_coral_no0, "bray")
+uuni_subcoral <- phyloseq::distance(sub_coral_no0, "uUniFrac")
+
+# Sub all
+uuni_suball <- phyloseq::distance(sub_all_no0, "uUniFrac")
+bray_suball <- phyloseq::distance(sub_all_no0, "bray")
+
+```
+
+### HH
+```{r}
+# HH
+uuni_HH <- phyloseq::distance(HH, "uUniFrac")
+bray_HH <- phyloseq::distance(HH, "bray")
+
+
+# Regions
+## PM
+uuni_HH_PM = phyloseq::distance(HH_PM, "uUniFrac")
+bray_HH_PM = phyloseq::distance(HH_PM, "bray")
+
+## USVI
+uuni_HH_USVI = phyloseq::distance(HH_USVI, "uUniFrac")
+bray_HH_USVI = phyloseq::distance(HH_USVI, "bray")
+
+# HH x SPECIES
+## Ofav
+uuni_HH_ofav = phyloseq::distance(HH_ofav, "uUniFrac")
+bray_HH_ofav = phyloseq::distance(HH_ofav, "bray")
+
+## Apal
+uuni_HH_apal = phyloseq::distance(HH_apal, "uUniFrac")
+bray_HH_apal = phyloseq::distance(HH_apal, "bray")
+
+
+# HH x YEAR
+## 2008
+uuni_HH_2008 = phyloseq::distance(HH_2008, "uUniFrac")
+bray_HH_2008 = phyloseq::distance(HH_2008, "bray")
+
+## 2010
+uuni_HH_2010 = phyloseq::distance(HH_2010, "uUniFrac")
+bray_HH_2010 = phyloseq::distance(HH_2010, "bray")
+
+## 2011
+uuni_HH_2011 = phyloseq::distance(HH_2011, "uUniFrac")
+bray_HH_2011 = phyloseq::distance(HH_2011, "bray")
+
+## 2013
+uuni_HH_2013 = phyloseq::distance(HH_2013, "uUniFrac")
+bray_HH_2013 = phyloseq::distance(HH_2013, "bray")
+
+
+# HH & HD
+uuni_HH_HD = phyloseq::distance(HH_HD, "uUniFrac")
+bray_HH_HD = phyloseq::distance(HH_HD, "bray")
+
+
+# HH & HD x REGION
+## PM
+uuni_HH_HD_PM = phyloseq::distance(HH_HD_PM, "uUniFrac")
+bray_HH_HD_PM = phyloseq::distance(HH_HD_PM, "bray")
+
+## USVI
+uuni_HH_HD_USVI = phyloseq::distance(HH_HD_USVI, "uUniFrac")
+bray_HH_HD_USVI = phyloseq::distance(HH_HD_USVI, "bray")
+
+
+
+# HH & HD x SPECIES
+## Ofav
+uuni_HH_HD_ofav = phyloseq::distance(HH_HD_ofav, "uUniFrac")
+bray_HH_HD_ofav = phyloseq::distance(HH_HD_ofav, "bray")
+
+## Apal
+uuni_HH_HD_apal = phyloseq::distance(HH_HD_apal, "uUniFrac")
+bray_HH_HD_apal = phyloseq::distance(HH_HD_apal, "bray")
+
+
+# HH & HD x YEAR
+## 2008
+uuni_HH_HD_2008 = phyloseq::distance(HH_HD_2008, "uUniFrac")
+bray_HH_HD_2008 = phyloseq::distance(HH_HD_2008, "bray")
+
+## 2010
+uuni_HH_HD_2010 = phyloseq::distance(HH_HD_2010, "uUniFrac")
+bray_HH_HD_2010 = phyloseq::distance(HH_HD_2010, "bray")
+
+## 2011
+uuni_HH_HD_2011 = phyloseq::distance(HH_HD_2011, "uUniFrac")
+bray_HH_HD_2011 = phyloseq::distance(HH_HD_2011, "bray")
+
+## 2013
+uuni_HH_HD_2013 = phyloseq::distance(HH_HD_2013, "uUniFrac")
+bray_HH_HD_2013 = phyloseq::distance(HH_HD_2013, "bray")
+
+```
+
+### D
+```{r}
+# D
+uuni_D <- phyloseq::distance(D, "uUniFrac")
+bray_D <- phyloseq::distance(D, "bray")
+
+
+# Regions
+## PM
+uuni_D_PM = phyloseq::distance(D_PM, "uUniFrac")
+bray_D_PM = phyloseq::distance(D_PM, "bray")
+
+## USVI
+uuni_D_USVI = phyloseq::distance(D_USVI, "uUniFrac")
+bray_D_USVI = phyloseq::distance(D_USVI, "bray")
+
+
+# D x SPECIES
+## Ofav
+uuni_D_ofav = phyloseq::distance(D_ofav, "uUniFrac")
+bray_D_ofav = phyloseq::distance(D_ofav, "bray")
+
+## Apal
+uuni_D_apal = phyloseq::distance(D_apal, "uUniFrac")
+bray_D_apal = phyloseq::distance(D_apal, "bray")
+
+
+# D x YEAR
+## 2008
+uuni_D_2008 = phyloseq::distance(D_2008, "uUniFrac")
+bray_D_2008 = phyloseq::distance(D_2008, "bray")
+
+## 2010
+uuni_D_2010 = phyloseq::distance(D_2010, "uUniFrac")
+bray_D_2010 = phyloseq::distance(D_2010, "bray")
+
+## 2011
+uuni_D_2011 = phyloseq::distance(D_2011, "uUniFrac")
+bray_D_2011 = phyloseq::distance(D_2011, "bray")
+
+## 2013
+uuni_D_2013 = phyloseq::distance(D_2013, "uUniFrac")
+bray_D_2013 = phyloseq::distance(D_2013, "bray")
+
+
+# D & HD
+uuni_D_HD = phyloseq::distance(D_HD, "uUniFrac")
+bray_D_HD = phyloseq::distance(D_HD, "bray")
+
+
+# D & HD x REGION
+## PM
+uuni_D_HD_PM = phyloseq::distance(D_HD_PM, "uUniFrac")
+bray_D_HD_PM = phyloseq::distance(D_HD_PM, "bray")
+
+## USVI
+uuni_D_HD_USVI = phyloseq::distance(D_HD_USVI, "uUniFrac")
+bray_D_HD_USVI = phyloseq::distance(D_HD_USVI, "bray")
+
+
+# D & HD x SPECIES
+## Ofav
+uuni_D_HD_ofav = phyloseq::distance(D_HD_ofav, "uUniFrac")
+bray_D_HD_ofav = phyloseq::distance(D_HD_ofav, "bray")
+
+## Apal
+uuni_D_HD_apal = phyloseq::distance(D_HD_apal, "uUniFrac")
+bray_D_HD_apal = phyloseq::distance(D_HD_apal, "bray")
+
+
+# D x YEAR
+## 2008
+uuni_D_HD_2008 = phyloseq::distance(D_HD_2008, "uUniFrac")
+bray_D_HD_2008 = phyloseq::distance(D_HD_2008, "bray")
+
+## 2010
+uuni_D_HD_2010 = phyloseq::distance(D_HD_2010, "uUniFrac")
+bray_D_HD_2010 = phyloseq::distance(D_HD_2010, "bray")
+
+## 2011
+uuni_D_HD_2011 = phyloseq::distance(D_HD_2011, "uUniFrac")
+bray_D_HD_2011 = phyloseq::distance(D_HD_2011, "bray")
+
+## 2013
+uuni_D_HD_2013 = phyloseq::distance(D_HD_2013, "uUniFrac")
+bray_D_HD_2013 = phyloseq::distance(D_HD_2013, "bray")
+
+```
+
+### By disease
+```{r}
+# D only
+## YBD 
+uuni_YBD = phyloseq::distance(YBD, "uUniFrac")
+bray_YBD = phyloseq::distance(YBD, "bray")
+
+## WPL
+uuni_WPL = phyloseq::distance(WPL, "uUniFrac")
+bray_WPL = phyloseq::distance(WPL, "bray")
+
+## Wpox
+uuni_Wpox = phyloseq::distance(Wpox, "uUniFrac")
+bray_Wpox = phyloseq::distance(Wpox, "bray")
+
+## WBD
+uuni_WBD = phyloseq::distance(WBD, "uUniFrac")
+bray_WBD = phyloseq::distance(WBD, "bray")
+
+
+# HD only
+## YBD
+uuni_YBD_HD = phyloseq::distance(YBD_HD, "uUniFrac")
+bray_YBD_HD = phyloseq::distance(YBD_HD, "bray")
+
+## WPL
+uuni_WPL_HD = phyloseq::distance(WPL_HD, "uUniFrac")
+bray_WPL_HD = phyloseq::distance(WPL_HD, "bray")
+
+## Wpox
+uuni_Wpox_HD = phyloseq::distance(Wpox_HD, "uUniFrac")
+bray_Wpox_HD = phyloseq::distance(Wpox_HD, "bray")
+
+## WBD
+uuni_WBD_HD = phyloseq::distance(WBD_HD, "uUniFrac")
+bray_WBD_HD = phyloseq::distance(WBD_HD, "bray")
+
+
+# D & HD
+## YBD
+### Coral only
+uuni_YBD_DHD = phyloseq::distance(YBD_DHD, "uUniFrac")
+bray_YBD_DHD = phyloseq::distance(YBD_DHD, "bray")
+
+## WPL
+uuni_WPL_DHD = phyloseq::distance(WPL_DHD, "uUniFrac")
+bray_WPL_DHD = phyloseq::distance(WPL_DHD, "bray")
+
+## WBD
+uuni_WBD_DHD = phyloseq::distance(Wpox_DHD, "uUniFrac")
+bray_WBD_DHD = phyloseq::distance(Wpox_DHD, "bray")
+
+## Wpox
+uuni_Wpox_DHD = phyloseq::distance(WBD_DHD, "uUniFrac")
+bray_Wpox_DHD = phyloseq::distance(WBD_DHD, "bray")
+
+
+# APAL
+## WBD
+uuni_WBD_HHDHD = phyloseq::distance(WBD_HHDHD, "uUniFrac")
+bray_WBD_HHDHD = phyloseq::distance(WBD_HHDHD, "bray")
+
+## WPx
+uuni_Wpox_HHDHD = phyloseq::distance(Wpox_HHDHD, "uUniFrac")
+bray_Wpox_HHDHD = phyloseq::distance(Wpox_HHDHD, "bray")
+
+# OFAV
+## PM2008
+uuni_YBD_HHDHD_PM2008 = phyloseq::distance(YBD_HHDHD_PM2008, "uUniFrac")
+bray_YBD_HHDHD_PM2008 = phyloseq::distance(YBD_HHDHD_PM2008, "bray")
+
+## PM2010
+uuni_YBD_HHDHD_PM2010 = phyloseq::distance(YBD_HHDHD_PM2010, "uUniFrac")
+bray_YBD_HHDHD_PM2010 = phyloseq::distance(YBD_HHDHD_PM2010, "bray")
+
+## USVI2013
+uuni_YBD_HHDHD_USVI2013 = phyloseq::distance(YBD_HHDHD_USVI2013, "uUniFrac")
+bray_YBD_HHDHD_USVI2013 = phyloseq::distance(YBD_HHDHD_USVI2013, "bray")
+
+## USVI2011
+### YBD
+uuni_YBD_HHDHD_USVI2011 = phyloseq::distance(YBD_HHDHD_USVI2011, "uUniFrac")
+bray_YBD_HHDHD_USVI2011 = phyloseq::distance(YBD_HHDHD_USVI2011, "bray")
+
+### WPL
+uuni_WPL_HHDHD_USVI2011 = phyloseq::distance(WPL_HHDHD_USVI2011, "uUniFrac")
+bray_WPL_HHDHD_USVI2011 = phyloseq::distance(WPL_HHDHD_USVI2011, "bray")
+
+```
+
+### By species
+```{r}
+# ofav
+uuni_ofav = phyloseq::distance(ofav, "uUniFrac")
+bray_ofav = phyloseq::distance(ofav, "bray")
+
+
+# apal
+uuni_apal = phyloseq::distance(apal, "uUniFrac")
+bray_apal = phyloseq::distance(apal, "bray")
+
+```
+
+
+### By region x year
+```{r}
+# Coral only
+## PM
+### 2010
+uuni_PM_cor_2010 = phyloseq::distance(PM_cor_2010, "uUniFrac")
+bray_PM_cor_2010 = phyloseq::distance(PM_cor_2010, "bray")
+
+### 2008
+uuni_PM_cor_2008 = phyloseq::distance(PM_cor_2010, "uUniFrac")
+bray_PM_cor_2008 = phyloseq::distance(PM_cor_2010, "bray")
+
+
+## USVI
+### 2013
+uuni_USVI_cor_2013 = phyloseq::distance(USVI_cor_2013, "uUniFrac")
+bray_USVI_cor_2013 = phyloseq::distance(USVI_cor_2013, "bray")
+
+### 2011
+uuni_USVI_cor_2011 = phyloseq::distance(USVI_cor_2011, "uUniFrac")
+bray_USVI_cor_2011 = phyloseq::distance(USVI_cor_2011, "bray")
+
+
+
+# Coral, water, sediment
+## PM
+### 2010
+uuni_PM_all_2010 = phyloseq::distance(PM_all_2010, "uUniFrac")
+bray_PM_all_2010 = phyloseq::distance(PM_all_2010, "bray")
+
+### 2008
+uuni_PM_all_2008 = phyloseq::distance(PM_all_2008, "uUniFrac")
+bray_PM_all_2008 = phyloseq::distance(PM_all_2008, "bray")
+
+
+## USVI
+### 2013
+uuni_USVI_all_2013 = phyloseq::distance(USVI_all_2013, "uUniFrac")
+bray_USVI_all_2013 = phyloseq::distance(USVI_all_2013, "bray")
+
+### 2011
+uuni_USVI_all_2011 = phyloseq::distance(USVI_all_2011, "uUniFrac")
+bray_USVI_all_2011 = phyloseq::distance(USVI_all_2011, "bray")
+
+
+
+# PM 2010 by dates
+## Early
+bray_PM_2010_early = phyloseq::distance(PM_2010_early, "bray")
+uuni_PM_2010_early = phyloseq::distance(PM_2010_early, "uUniFrac")
+
+## Late
+bray_PM_2010_late = phyloseq::distance(PM_2010_late, "bray")
+uuni_PM_2010_late = phyloseq::distance(PM_2010_late, "uUniFrac")
+
+# PM 2010 by location
+## Bocana
+bray_PM_2010_boc = phyloseq::distance(PM_2010_boc, "bray")
+uuni_PM_2010_boc = phyloseq::distance(PM_2010_boc, "uUniFrac")
+
+## Jardines
+bray_PM_2010_jar = phyloseq::distance(PM_2010_jar, "bray")
+uuni_PM_2010_jar = phyloseq::distance(PM_2010_jar, "uUniFrac")
+
+## Picudas
+uuni_PM_2010_pic = phyloseq::distance(PM_2010_pic, "uUniFrac")
+bray_PM_2010_pic = phyloseq::distance(PM_2010_pic, "bray")
+```
+
+
+### Region x year x species
+```{r}
+# Ofav
+## PM
+### 2010
+uuni_PM_2010_ofav = phyloseq::distance(PM_2010_ofav, "uUniFrac")
+bray_PM_2010_ofav = phyloseq::distance(PM_2010_ofav, "bray")
+
+### 2008
+uuni_PM_2008_ofav = phyloseq::distance(PM_2008_ofav, "uUniFrac")
+bray_PM_2008_ofav = phyloseq::distance(PM_2008_ofav, "bray")
+
+
+## USVI
+### 2013
+uuni_USVI_2013_ofav = phyloseq::distance(USVI_2013_ofav, "uUniFrac")
+bray_USVI_2013_ofav = phyloseq::distance(USVI_2013_ofav, "bray")
+
+### 2011
+uuni_USVI_2011_ofav = phyloseq::distance(USVI_2011_ofav, "uUniFrac")
+bray_USVI_2011_ofav = phyloseq::distance(USVI_2011_ofav, "bray")
+
+
+
+# Apal
+## USVI
+uuni_USVI_2011_apal = phyloseq::distance(USVI_2011_apal, "uUniFrac")
+bray_USVI_2011_apal = phyloseq::distance(USVI_2011_apal, "bray")
+
+```
+
+# Set theme: Use ggplot theme to make everything more legible
+```{r}
+ggtheme <- theme(axis.title = element_text(colour="black",family = "Helvetica",
+                                           size = rel(1.5)), 
+                 axis.text = element_text(family = "Helvetica",colour = "black",
+                                          size = rel(1)), 
+                 axis.line = element_line(size = 0.5,colour = "black"), 
+                 axis.ticks = element_blank(),
+                 panel.grid.major = element_line(colour="grey",size = rel(0.25)), 
+                 panel.grid.minor = element_blank(), 
+                 panel.background = element_blank(),
+                 plot.title = element_text(colour = "black", face = "bold",
+                                           size = rel(2),family = "Helvetica",hjust = 0.5,
+                 geom_point(size = 20)))
+
+
+ggtheme2 <- theme(legend.text = element_text(colour="black",
+                                             family = "Helvetica", size = rel(1.5)))
+
+# Color palette used for A. palmata health state sample types
+apal_colors <- c("cornflowerblue", "darkseagreen", "green4", "plum3", "mediumpurple")
+
+# Color palette used for O. faveolata health state sample types
+ofav_colors <- c("firebrick", "pink2", "hotpink3", "goldenrod", "chocolate")
+
+# Color palette used for O. faveolata health state sample types from 2008
+ofav_colors_PM2008 <- c("firebrick", "goldenrod", "chocolate")
+
+
+```
+
+
+# SIGNIFICANCE TESTING
+
+## SUBCORAL
+### PERMANOVA
+```{r}
+# SUBCORAL
+## Bray
+### Make a data frame from the otu_data
+df <- data.frame(sample_data(sub_coral_no0))
+distance_methods <-c("bray_subcoral")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State+Region+Collection_Year+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_sub_coral",date(),".txt"))
+} 
+
+## UUNI
+### Make a data frame from the otu_data
+df <- data.frame(sample_data(sub_coral_no0))
+distance_methods <-c("uuni_subcoral")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State+Region+Collection_Year+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_sub_coral",date(),".txt"))
+} 
+```
+
+### Posthoc
+```{r}
+df <- data.frame(sample_data(sub_coral_no0))
+# Pariwise Permutation MANOVAs: health state
+set.seed(129)
+pairwise.perm.manova(bray_subcoral,df$Health_State,nperm=1000)
+
+# Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(bray_subcoral,df$Region,nperm=1000)
+
+
+# Pariwise Permutation MANOVAs: Collection year
+set.seed(129)
+pairwise.perm.manova(bray_subcoral,df$Collection_Year,nperm=1000)
+
+```
+
+
+## SUBALL
+### PERMANOVA
+```{r}
+# SUBCORAL
+## Bray
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(sub_all_nocur_no02))
+distance_methods <-c("bray_suball")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"merged_ADONIS_bray_sub_coral_nocur_no02",date(),".txt"))
+} 
+
+```
+
+### Posthoc
+```{r}
+df <- data.frame(sample_data(sub_coral_nocur_no02))
+# Pariwise Permutation MANOVAs: health state
+set.seed(129)
+pairwise.perm.manova(bray_suball,df$Species,nperm=1000)
+
+# Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(bray_suball,df$Health_State,nperm=1000)
+
+# Pariwise Permutation MANOVAs: Collection year
+set.seed(129)
+pairwise.perm.manova(bray_suball,df$Collection_Year,nperm=1000)
+
+```
+
+## HH
+### All HH
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH))
+distance_methods <-c("bray_HH")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_HH",date(),".txt"))
+} 
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH))
+distance_methods <-c("uuni_HH")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_HH",date(),".txt"))
+}
+
+```
+
+#### Posthoc
+```{r}
+## Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(bray_HH,df$Region,nperm=1000)
+
+```
+
+### HH x USVI
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_USVI))
+distance_methods <-c("bray_HH_USVI")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Location+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_HH_USVI_2021_03",date(),".txt"))
+} 
+
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_USVI))
+distance_methods <-c("uuni_HH_USVI")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Location+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_HH_USVI_2021_03",date(),".txt"))
+} 
+
+
+```
+
+### HH ofav
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_ofav))
+distance_methods <-c("bray_HH_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Region+Location+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_HH_ofav_2020_03",date(),".txt"))
+} 
+
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_ofav))
+distance_methods <-c("uuni_HH_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Region+Location+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_HH_ofav_2020_03",date(),".txt"))
+} 
+
+```
+
+#### Posthoc
+```{r}
+# Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(bray_HH_ofav,df$Region,nperm=1000)
+
+```
+
+### HH apal
+#### All collected in the same region as well as year, so testing for differences across locations instead
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_apal))
+distance_methods <-c("bray_HH_apal")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_HH_apal",date(),".txt"))
+} 
+
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(HH_apal))
+distance_methods <-c("uuni_HH_apal")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_HH_apal",date(),".txt"))
+} 
+
+```
+
+
+## D
+### All D
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(D))
+distance_methods <-c("bray_D")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_D",date(),".txt"))
+} 
+
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(D))
+distance_methods <-c("uuni_D")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_D",date(),".txt"))
+}
+
+```
+
+#### Posthoc
+```{r}
+# Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(bray_D,df$Health_State,nperm=1000)
+
+
+# Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(bray_D,df$Region,nperm=1000)
+
+```
+
+## By species
+### Ofav
+#### PERMANOVA
+```{r}
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(ofav))
+distance_methods <-c("bray_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Region+Collection_Year", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis/",i,"merged_ADONIS_bray_ofav_2021_03",date(),".txt"))
+} 
+
+```
+
+#### Posthoc
+```{r}
+# Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(bray_ofav,df$Health_State,nperm=1000)
+
+
+# Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(bray_ofav,df$Region,nperm=1000)
+
+
+set.seed(129)
+pairwise.perm.manova(bray_ofav,df$Collection_Year,nperm=1000)
+```
+
+### Apal
+#### PERMANOVA
+```{r}
+# BRAY
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(apal))
+distance_methods <-c("bray_apal")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_apal",date(),".txt"))
+} 
+
+
+# UUNI
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(apal))
+distance_methods <-c("uuni_apal")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_apal",date(),".txt"))
+} 
+
+```
+
+#### Posthoc
+```{r}
+# BRAY
+## Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(bray_apal,df$Health_State,nperm=1000)
+
+## Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(bray_apal,df$Location,nperm=1000)
+
+
+# UUNI
+## Pariwise Permutation MANOVAs: Health State
+set.seed(129)
+pairwise.perm.manova(uuni_apal,df$Health_State,nperm=1000)
+
+## Pariwise Permutation MANOVAs: Region
+set.seed(129)
+pairwise.perm.manova(uuni_apal,df$Location,nperm=1000)
+
+```
+
+#### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(apal))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_apal, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_apal_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(apal))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_apal, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_apal_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_apal, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_apal_health",date(),".txt"))
+
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_apal, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("~output/betadisp_2021_04/",i,"BETADISP_uuni_apal_location",date(),".txt"))
+
+```
+
+
+## REGION x YEAR
+### PM
+#### 2010
+##### PERMANOVA
+###### Bray
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_cor_2010))
+distance_methods <-c("bray_PM_cor_2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PMcor2010",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(bray_PM_cor_2010,df$Health_State,nperm=1000)
+# No sig dif between HH, YBD_HD, or YBD_D
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_all_2010))
+distance_methods <-c("bray_PM_all_2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PMall2010",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(bray_PM_all_2010,df$Health_State,nperm=1000)
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(bray_PM_all_2010,df$Species,nperm=1000)
+
+
+
+# By date of collection
+## Early
+df <- data.frame(sample_data(PM_2010_early))
+distance_methods <-c("bray_PM_2010_early")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PM2010early",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(PM_2010_early))
+set.seed(129)
+pairwise.perm.manova(bray_PM_2010_early,df$Location,nperm=1000)
+
+
+## Late
+df <- data.frame(sample_data(PM_2010_late))
+distance_methods <-c("bray_PM_2010_late")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PM2010late_healthlocation",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(PM_2010_late))
+set.seed(129)
+result <- pairwise.perm.manova(bray_PM_2010_late,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_PM2010late_pairwise_location",date(),".txt"))
+
+# By Location
+
+## Bocana
+df <- data.frame(sample_data(PM_2010_boc))
+distance_methods <-c("bray_PM_2010_boc")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PM2010boc",date(),".txt"))
+} 
+
+## Jardines
+df <- data.frame(sample_data(PM_2010_jar))
+distance_methods <-c("bray_PM_2010_jar")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PM2010jar",date(),".txt"))
+} 
+
+## Picudas
+df <- data.frame(sample_data(PM_2010_pic))
+distance_methods <-c("bray_PM_2010_pic")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_PM2010pic",date(),".txt"))
+} 
+```
+
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_cor_2010))
+distance_methods <-c("uuni_PM_cor_2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PMcor2010",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(uuni_PM_cor_2010,df$Health_State,nperm=1000)
+# No sig dif between HH, YBD_HD, or YBD_D
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_all_2010))
+distance_methods <-c("uuni_PM_all_2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PMall2010",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(uuni_PM_all_2010,df$Health_State,nperm=1000)
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+pairwise.perm.manova(uuni_PM_all_2010,df$Species,nperm=1000)
+
+
+
+# By date of collection
+## Early
+df <- data.frame(sample_data(PM_2010_early))
+distance_methods <-c("uuni_PM_2010_early")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2010early",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(PM_2010_early))
+set.seed(129)
+pairwise.perm.manova(uuni_PM_2010_early,df$Location,nperm=1000)
+
+
+## Late
+df <- data.frame(sample_data(PM_2010_late))
+distance_methods <-c("uuni_PM_2010_late")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2010late",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(PM_2010_late))
+set.seed(129)
+pairwise.perm.manova(uuni_PM_2010_late,df$Location,nperm=1000)
+
+
+# By Location
+
+## Bocana
+df <- data.frame(sample_data(PM_2010_boc))
+distance_methods <-c("uuni_PM_2010_boc")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2010boc",date(),".txt"))
+} 
+
+## Jardines
+df <- data.frame(sample_data(PM_2010_jar))
+distance_methods <-c("uuni_PM_2010_jar")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2010jar",date(),".txt"))
+} 
+
+## Picudas
+df <- data.frame(sample_data(PM_2010_pic))
+distance_methods <-c("uuni_PM_2010_pic")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2010pic",date(),".txt"))
+}
+
+```
+
+##### PERMDISP
+###### Bray
+```{r}
+# Coral
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_cor_2010))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_cor_2010, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PMcor2010_health",date(),".txt"))
+
+
+# All
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_all_2010))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_all_2010, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PMall2010_health",date(),".txt"))
+
+# Early
+## Health state
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_early))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_early, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010early_health",date(),".txt"))
+
+## Location
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_early))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_early, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010early_location",date(),".txt"))
+
+# Late
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_late))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_late, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010late_health",date(),".txt"))
+
+
+
+# Bocana
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_boc))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_boc, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010boc_health",date(),".txt"))
+
+# Jardines
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_jar))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_jar, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010jar_health",date(),".txt"))
+
+# Picudas
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_pic))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_pic, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2010pic_health",date(),".txt"))
+
+
+```
+
+
+###### UUNI
+```{r}
+# Coral
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_cor_2010))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_cor_2010, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_PMcor2010_health",date(),".txt"))
+
+
+# All
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_all_2010))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_all_2010, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_PMall2010_health",date(),".txt"))
+
+# Early
+## Health state
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_early))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_early, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_PM2010early_health",date(),".txt"))
+
+## Location
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_early))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_early, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_PM2010early_location",date(),".txt"))
+
+# Late
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_late))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_late, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("/output/betadisp_2021_04/",i,"BETADISP_uuni_PM2010late_health",date(),".txt"))
+
+
+
+
+# Bocana
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_boc))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_boc, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_PM2010boc_health",date(),".txt"))
+
+# Jardines
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_jar))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_jar, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_PM2010jar_health",date(),".txt"))
+
+# Picudas
+## Health State
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_pic))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_pic, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_PM2010pic_health",date(),".txt"))
+
+
+```
+
+#### 2008
+##### PERMANOVA
+###### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2008_ofav))
+distance_methods <-c("bray_PM_2008_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_PM2008ofav",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_PM_2008_ofav,df$Health_State,nperm=1000)
+# No sig dif between HH, YBD_HD, or YBD_D
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_PM2008ofav_health",date(),".txt"))
+
+```
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2008_ofav))
+distance_methods <-c("uuni_PM_2008_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_PM2008ofav",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_PM_2008_ofav,df$Health_State,nperm=1000)
+# No sig dif between HH, YBD_HD, or YBD_D
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_PM2008ofav_health",date(),".txt"))
+
+
+```
+
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2008_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2008_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_PM2008ofav_health",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_PM_2008_ofav, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_PM2008ofav_health",date(),".txt"))
+
+
+```
+
+
+
+### USVI
+#### 2013
+##### PERMANOVA
+###### Bray
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2013_ofav))
+distance_methods <-c("bray_USVI_2013_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_USVI2013ofav_healthlocation",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2013_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2013_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVI2013ofav_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2013_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2013_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVI2013ofav_location",date(),".txt"))
+
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_all_2013))
+distance_methods <-c("bray_USVI_all_2013")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_USVIall2013",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_all_2013,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVIall2013_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_all_2013,df$Species,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVIall2013",date(),".txt"))
+
+```
+
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2013_ofav))
+distance_methods <-c("uuni_USVI_2013_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_USVI2013ofav",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2013_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_2013_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_USVI2013ofav_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2013_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_2013_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_USVI2013ofav_location",date(),".txt"))
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_all_2013))
+distance_methods <-c("uuni_USVI_all_2013")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_USVIall2013",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_all_2013,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuniUSVI_all_2013_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_all_2013,df$Species,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_USVI_all_2013_species",date(),".txt"))
+
+
+```
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_2013_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_USVI2013ofav_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_2013_ofav, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_USVI2013ofav_location",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_all_2013))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_all_2013, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_USVIall2013_health",date(),".txt"))
+
+
+# UUNI
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_USVI_2013_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_USVI2013ofav_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_USVI_2013_ofav, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_USVI2013ofav_location",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_all_2013))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_USVI_all_2013, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_USVIall2013",date(),".txt"))
+
+
+
+```
+
+
+#### 2011
+##### PERMANOVA
+###### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_cor_2011))
+distance_methods <-c("bray_USVI_cor_2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_USVIcor2011",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_cor_2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_pairwise_bray_USVIcor2011_health",date(),".txt"))
+
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_all_2011))
+distance_methods <-c("bray_USVI_all_2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_USVIall2011",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_all_2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVIall2011_health",date(),".txt"))
+
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_all_2011,df$Species,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_bray_USVIall2011_spec",date(),".txt"))
+
+```
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_cor_2011))
+distance_methods <-c("uuni_USVI_cor_2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_USVIcor2011",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_cor_2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_USVIcor2011_health",date(),".txt"))
+
+
+# All
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_all_2011))
+distance_methods <-c("uuni_USVI_all_2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Species+Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_USVIall2011",date(),".txt"))
+} 
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_all_2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_USVIall2011_health",date(),".txt"))
+
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_all_2011,df$Species,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_pairwise_uuni_USVIall2011_species",date(),".txt"))
+
+```
+
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_cor_2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_cor_2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_USVIcor2011_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_all_2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_all_2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_USVIall2011_health",date(),".txt"))
+
+
+# UUNI
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_cor_2011))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_USVI_cor_2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_USVIcor2011_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_all_2011))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_USVI_all_2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_USVIall2011_health",date(),".txt"))
+
+
+```
+
+
+## Region x year x species
+### OFAV
+#### PM
+##### BRAY
+```{r}
+# 2010
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2010_ofav))
+distance_methods <-c("bray_PM_2010_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_PM2010ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_PM_2010_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_PM_2010_ofav_health",date(),".txt"))
+# No difs
+set.seed(129)
+result <- pairwise.perm.manova(bray_PM_2010_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_PM_2010_ofav_location",date(),".txt"))
+
+
+# 2008
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2008_ofav))
+distance_methods <-c("bray_PM_2008_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis/",i,"merged_ADONIS_bray_PM2008ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_PM_2008_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis/",i,"ADONIS_bray_health_PM_2008_ofav_2021_03",date(),".txt"))
+
+```
+
+
+##### UUNI
+```{r}
+# 2010
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2010_ofav))
+distance_methods <-c("uuni_PM_2010_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_PM2010ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_PM_2010_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_PM_2010_ofav_health",date(),".txt"))
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_PM_2010_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_PM_2010_ofav_location",date(),".txt"))
+
+
+# 2008
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(PM_2008_ofav))
+distance_methods <-c("uuni_PM_2008_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis/",i,"merged_ADONIS_uuni_PM2008ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_PM_2008_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis/",i,"ADONIS_uuni_health_PM_2008_ofav_2021_03",date(),".txt"))
+
+```
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2010_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_bray_PM_2010_ofav_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2008_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_PM_2008_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_bray_PM_2008_ofav_2021_03",date(),".txt"))
+
+# UUNI
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2010_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2010_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_uuni_PM_2010_ofav_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(PM_2008_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(uuni_PM_2008_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_uuni_PM_2008_ofav_2021_03",date(),".txt"))
+
+```
+
+#### USVI
+##### PERMANOVA
+###### BRAY
+```{r}
+# 2013
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2013_ofav))
+distance_methods <-c("bray_USVI_2013_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis/",i,"merged_ADONIS_bray_USVI2013ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2013_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis/",i,"ADONIS_bray_health_USVI_2013_ofav_2021_03",date(),".txt"))
+
+
+# 2011
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2011_ofav))
+distance_methods <-c("bray_USVI_2011_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_USVI2011ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2011_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2011_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("~output/adonis_2021_04/","ADONIS_bray_pairwise_USVI_2011_ofav_health",date(),".txt"))
+
+df <- data.frame(sample_data(USVI_2011_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2011_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("~output/adonis_2021_04/","ADONIS_bray_pairwise_USVI_2011_ofav_location",date(),".txt"))
+
+```
+
+
+###### UUNI
+```{r}
+# 2013
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2013_ofav))
+distance_methods <-c("uuni_USVI_2013_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis/",i,"merged_ADONIS_uuni_USVI2013ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_2013_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis/",i,"ADONIS_uuni_health_USVI_2013_ofav_2021_03",date(),".txt"))
+
+
+# 2011
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2011_ofav))
+distance_methods <-c("uuni_USVI_2011_ofav")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_USVI2011ofav",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2011_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_2011_ofav,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_USVI_2011_ofav_health",date(),".txt"))
+
+df <- data.frame(sample_data(USVI_2011_ofav))
+set.seed(129)
+result <- pairwise.perm.manova(uuni_USVI_2011_ofav,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_USVI_2011_ofav_location",date(),".txt"))
+
+```
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_2013_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_bray_USVI_2013_ofav_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2011_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_2011_ofav, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_bray_health_USVI_2011_ofav_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2011_ofav))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_USVI_2011_ofav, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_bray_location_USVI_2011_ofav_2021_03",date(),".txt"))
+
+
+# UUNI
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2013_ofav))
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_USVI_2013_ofav, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_uuni_USVI_2013_ofav8_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2011_ofav))
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_USVI_2011_ofav, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_uuni_health_USVI_2011_ofav_2021_03",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(USVI_2011_ofav))
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_USVI_2011_ofav, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp/",i,"BETADISP_uuni_location_USVI_2011_ofav_2021_03",date(),".txt"))
+
+```
+
+
+
+### APAL
+#### USVI
+```{r}
+# 2011
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(USVI_2011_apal))
+distance_methods <-c("bray_USVI_2011_apal")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_USVI2011apal",date(),".txt"))
+} 
+# Health state significantly different
+# Pariwise Permutation MANOVAs
+df <- data.frame(sample_data(USVI_2011_apal))
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2011_apal,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_USVI2011apal_health",date(),".txt"))
+
+# Sig difs
+## HH x WBD_D and Wpox_D
+## WBD_D x all
+## Wpox_D x Wpox_HD
+ 
+set.seed(129)
+result <- pairwise.perm.manova(bray_USVI_2011_apal,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_USVI2011apal_location",date(),".txt"))
+```
+
+
+## Region x year x species x disease
+### OFAV
+#### PM
+##### 2008
+###### PERMANOVA
+####### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_PM2008))
+distance_methods <-c("bray_YBD_HHDHD_PM2008")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_YBD_HHDHD_PM2008",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_PM2008,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_YBD_HHDHD_PM2008_health",date(),".txt"))
+
+
+# Only Ofav, no water or sediment
+
+
+```
+
+####### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_PM2008))
+distance_methods <-c("uuni_YBD_HHDHD_PM2008")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_YBD_HHDHD_PM2008",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_PM2008,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_YBD_HHDHD_PM2008_health",date(),".txt"))
+
+
+# Only Ofav, no water or sediment
+
+
+```
+
+
+###### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_PM2008))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_PM2008, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_YBD_HHDHD_PM2008_health",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_YBD_HHDHD_PM2008, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_YBD_HHDHD_PM2008_health",date(),".txt"))
+
+```
+
+##### 2010
+###### PERMANOVA
+####### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_PM2010))
+distance_methods <-c("bray_YBD_HHDHD_PM2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_YBD_HHDHD_PM2010",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_PM2010,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_YBD_HHDHD_PM2010_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_PM2010,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_YBD_HHDHD_PM2010_location",date(),".txt"))
+
+
+```
+
+####### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_PM2010))
+distance_methods <-c("uuni_YBD_HHDHD_PM2010")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_YBD_HHDHD_PM2010",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_PM2010,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_YBD_HHDHD_PM2010_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_PM2010,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_YBD_HHDHD_PM2010_location",date(),".txt"))
+
+
+```
+
+
+###### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_PM2010))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_PM2010, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_PM2010_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_PM2010))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_PM2010, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_PM2010_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_YBD_HHDHD_PM2010, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_YBD_HHDHD_PM2010_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_YBD_HHDHD_PM2010, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_YBD_HHDHD_PM2010_location",date(),".txt"))
+
+```
+
+
+
+#### USVI
+##### 2011
+###### WPL
+####### PERMANOVA
+######## BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(WPL_HHDHD_USVI2011))
+distance_methods <-c("bray_WPL_HHDHD_USVI2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_WPL_HHDHD_USVI2011",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_WPL_HHDHD_USVI2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_WPL_HHDHD_USVI2011_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_WPL_HHDHD_USVI2011,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_WPL_HHDHD_USVI2011_location",date(),".txt"))
+
+
+```
+
+######## UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(WPL_HHDHD_USVI2011))
+distance_methods <-c("uuni_WPL_HHDHD_USVI2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_WPL_HHDHD_USVI2011",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_WPL_HHDHD_USVI2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_WPL_HHDHD_USVI2011_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_WPL_HHDHD_USVI2011,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_uuni_pairwise_WPL_HHDHD_USVI2011_location",date(),".txt"))
+
+```
+
+
+####### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(WPL_HHDHD_USVI2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_WPL_HHDHD_USVI2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_WPL_HHDHD_USVI2011_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(WPL_HHDHD_USVI2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_WPL_HHDHD_USVI2011, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_bray_WPL_HHDHD_USVI2011_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_WPL_HHDHD_USVI2011, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_WPL_HHDHD_USVI2011_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_WPL_HHDHD_USVI2011, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_WPL_HHDHD_USVI2011_location",date(),".txt"))
+
+
+
+```
+
+###### YBD
+####### PERMANOVA
+######## BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_USVI2011))
+distance_methods <-c("bray_YBD_HHDHD_USVI2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_YBD_HHDHD_USVI2011",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_USVI2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_YBD_HHDHD_USVI2011_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_USVI2011,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/",i,"ADONIS_bray_pairwise_YBD_HHDHD_USVI2011_location",date(),".txt"))
+
+
+```
+
+######## UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_USVI2011))
+distance_methods <-c("uuni_YBD_HHDHD_USVI2011")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/betadisp_2021_04/","ADONIS_uuni_YBD_HHDHD_USVI2011",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_USVI2011,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_YBD_HHDHD_USVI2011_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_USVI2011,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_YBD_HHDHD_USVI2011_location",date(),".txt"))
+
+
+```
+
+
+####### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_USVI2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_USVI2011, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_USVI2011_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_USVI2011))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_USVI2011, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_USVI2011_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_YBD_HHDHD_USVI2011, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_YBD_HHDHD_USVI2011_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_YBD_HHDHD_USVI2011, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/",i,"BETADISP_uuni_YBD_HHDHD_USVI2011_location",date(),".txt"))
+
+```
+
+##### 2013
+###### PERMANOVA
+####### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_USVI2013))
+distance_methods <-c("bray_YBD_HHDHD_USVI2013")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_YBD_HHDHD_USVI2013",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_USVI2013,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_YBD_HHDHD_USVI2013_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_YBD_HHDHD_USVI2013,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_YBD_HHDHD_USVI2013_location",date(),".txt"))
+
+```
+
+####### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(YBD_HHDHD_USVI2013))
+distance_methods <-c("uuni_YBD_HHDHD_USVI2013")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_YBD_HHDHD_USVI2013",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_USVI2013,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_YBD_HHDHD_USVI2013_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_YBD_HHDHD_USVI2013,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_YBD_HHDHD_USVI2013_location",date(),".txt"))
+
+```
+
+
+###### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_USVI2013))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_USVI2013, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_USVI2013_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(YBD_HHDHD_USVI2013))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_YBD_HHDHD_USVI2013, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_YBD_HHDHD_USVI2013_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_YBD_HHDHD_USVI2013, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_YBD_HHDHD_USVI2013_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_YBD_HHDHD_USVI2013, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_YBD_HHDHD_USVI2013_location",date(),".txt"))
+
+```
+
+
+
+### APAL
+#### WPx
+##### PERMANOVA
+###### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(Wpox_HHDHD))
+distance_methods <-c("bray_Wpox_HHDHD")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_Wpox_HHDHD",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_Wpox_HHDHD,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_Wpox_HHDHD_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_Wpox_HHDHD,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_Wpox_HHDHD_location",date(),".txt"))
+
+```
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(Wpox_HHDHD))
+distance_methods <-c("uuni_Wpox_HHDHD")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_Wpox_HHDHD",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_Wpox_HHDHD,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_Wpox_HHDHD_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_Wpox_HHDHD,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_Wpox_HHDHD_location",date(),".txt"))
+
+```
+
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(Wpox_HHDHD))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_Wpox_HHDHD, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_Wpox_HHDHD_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(Wpox_HHDHD))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_Wpox_HHDHD, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_Wpox_HHDHD_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_Wpox_HHDHD, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_Wpox_HHDHD_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_Wpox_HHDHD, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_Wpox_HHDHD_location",date(),".txt"))
+
+```
+
+#### WB
+##### PERMANOVA
+###### BRAY
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(WBD_HHDHD))
+distance_methods <-c("bray_WBD_HHDHD")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_WBD_HHDHD",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_WBD_HHDHD,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_WBD_HHDHD_health",date(),".txt"))
+
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(bray_WBD_HHDHD,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_bray_pairwise_WBD_HHDHD_location",date(),".txt"))
+
+
+
+```
+
+###### UUNI
+```{r}
+# Coral
+## Make a data frame from the otu_data
+df <- data.frame(sample_data(WBD_HHDHD))
+distance_methods <-c("uuni_WBD_HHDHD")
+set.seed(129)
+# Run for loop in distance matrices         
+for (i in distance_methods){ 
+  form <- as.formula(paste(i, "Health_State+Location", sep="~"))
+  print(form)
+ adonis(form, data=df)->result
+ print(result)
+ capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_WBD_HHDHD",date(),".txt"))
+} 
+
+# Pariwise Permutation MANOVAs
+set.seed(129)
+result <- pairwise.perm.manova(uuni_WBD_HHDHD,df$Health_State,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_WBD_HHDHD_health",date(),".txt"))
+
+
+set.seed(129)
+result <- pairwise.perm.manova(uuni_WBD_HHDHD,df$Location,nperm=1000)
+print(result)
+capture.output(result, file = paste0("output/adonis_2021_04/","ADONIS_uuni_pairwise_WBD_HHDHD_location",date(),".txt"))
+
+
+
+```
+
+
+##### PERMDISP
+```{r}
+# Bray
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(WBD_HHDHD))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_WBD_HHDHD, sampledf$Health_State)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_WBD_HHDHD_health",date(),".txt"))
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(WBD_HHDHD))
+## Make a data frame from the otu_data
+beta <- betadisper(bray_WBD_HHDHD, sampledf$Location)
+result <- permutest(beta, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_bray_WBD_HHDHD_location",date(),".txt"))
+
+# UUNI
+## Make a data frame from the otu_data
+beta2 <- betadisper(uuni_WBD_HHDHD, sampledf$Health_State)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_WBD_HHDHD_health",date(),".txt"))
+
+beta2 <- betadisper(uuni_WBD_HHDHD, sampledf$Location)
+result <- permutest(beta2, pairwise = TRUE)
+print(result)
+capture.output(result, file = paste0("output/betadisp_2021_04/","BETADISP_uuni_WBD_HHDHD_location",date(),".txt"))
+
+
+
+```
+
+
+
+# PCoAs
+## All coral samples
+```{r}
+# BRAY
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(sub_coral_no0, method="PCoA", distance=bray_subcoral)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(sub_coral_no0, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_subcoral.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(sub_coral_no0, method="PCoA", distance=uuni_subcoral)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(sub_coral_no0, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_subcoral.pdf",width=9,height=5)
+pcoa
+dev.off()
+```
+
+## All coral and water samples
+```{r}
+# BRAY
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(sub_all_no0, method="PCoA", distance=bray_suball)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(sub_all_no0, rt.pcoa, "samples", color="Species", shape="Region") + stat_ellipse(level = 0.90,type = "t",aes(group=Species)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_suball_colorSpecies.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(sub_all_no0, method="PCoA", distance=uuni_suball)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(sub_all_no0, rt.pcoa, "samples", color="Species", shape="Region") + stat_ellipse(level = 0.90,type = "t",aes(group=Species)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_suball_colorSpecies.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+```
+
+## HH
+```{r}
+# BRAY
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(HH, method="PCoA", distance=bray_HH)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(HH, rt.pcoa, "samples", color="Region", shape="Collection_Year") + stat_ellipse(level = 0.90,type = "t",aes(group=Species)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_HH_bray_colorRegion.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(HH, method="PCoA", distance=uuni_HH)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(HH, rt.pcoa, "samples", color="Species", shape="Region") + stat_ellipse(level = 0.90,type = "t",aes(group=Species)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_HH_uuni_colorSpecies.pdf",width=9,height=5)
+pcoa
+dev.off()
+```
+
+## D
+```{r}
+# BRAY
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(D, method="PCoA", distance=bray_D)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(D, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_D_colorHealth.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(D, method="PCoA", distance=uuni_D)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(D, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_D_colorHealth.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+```
+
+## Ofav
+```{r}
+# BRAY
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(ofav, method="PCoA", distance=bray_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(ofav, rt.pcoa, "samples", color="Health_State", shape="Region") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_Ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(ofav, method="PCoA", distance=uuni_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(ofav, rt.pcoa, "samples", color="Health_State", shape="Region") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_Ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+```
+
+## USVI 2011
+```{r}
+# All
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_all_2011, method="PCoA", distance=bray_USVI_all_2011)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_all_2011, rt.pcoa, "samples", color="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVIall2011_colSpec.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_all_2011, method="PCoA", distance=uuni_USVI_all_2011)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_all_2011, rt.pcoa, "samples", color="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVIall2011_colSpec.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# Coral
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_cor_2011, method="PCoA", distance=bray_USVI_cor_2011)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_cor_2011, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVIcor2011_colHealth.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_cor_2011, method="PCoA", distance=uuni_USVI_cor_2011)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_cor_2011, rt.pcoa, "samples", color="Health_State", shape="Species") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVIcor2011_colHealth.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+```
+
+
+## USVI x year Apal
+```{r}
+# BRAY - health state
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_2011_apal, method="PCoA", distance=bray_USVI_2011_apal)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_apal, rt.pcoa, "samples", color="Health_State") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State),linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = apal_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2011apal.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# BRAY - health state + location
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_2011_apal, method="PCoA", distance=bray_USVI_2011_apal)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_apal, rt.pcoa, "samples", color="Health_State", shape="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 4) + scale_color_manual(values = apal_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2011apal_location.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(USVI_2011_apal, method="PCoA", distance=uuni_USVI_2011_apal)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_apal, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State)) + ggtheme + geom_point(size = 4) + scale_color_manual(values = apal_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVI2011apal.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+```
+
+## Ofav x PM x 2010
+```{r}
+# BRAY - Location
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=bray_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("~output/pcoa_2021_04/PCoA_bray_PM2010ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# BRAY - Collection time
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=bray_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Collection_Yr_Mn_Da", shape="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Collection_Yr_Mn_Da)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010ofav_fulldate.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# BRAY - Health state + location
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=bray_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI
+##Calculate the PCoA on this distance matrix
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=uuni_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI - collection time + location
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=uuni_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Collection_Yr_Mn_Da", shape="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Collection_Yr_Mn_Da)) + ggtheme + geom_point(size = 2)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010ofav_fulldate.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI - Health state + location
+rt.pcoa = ordinate(PM_2010_ofav, method="PCoA", distance=uuni_PM_2010_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# By date of collection
+## BRAY - Early
+rt.pcoa = ordinate(PM_2010_early, method="PCoA", distance=bray_PM_2010_early)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_early, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010early.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+## BRAY - Late
+rt.pcoa = ordinate(PM_2010_late, method="PCoA", distance=bray_PM_2010_late)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_late, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010late.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+## UUNI
+## Early
+rt.pcoa = ordinate(PM_2010_early, method="PCoA", distance=uuni_PM_2010_early)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_early, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010early.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+## UUNI - Late
+rt.pcoa = ordinate(PM_2010_late, method="PCoA", distance=uuni_PM_2010_late)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_late, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010late.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+# By location
+## BRAY - Bocana
+rt.pcoa = ordinate(PM_2010_boc, method="PCoA", distance=bray_PM_2010_boc)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_boc, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010boc.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+
+## BRAY - Jardines
+rt.pcoa = ordinate(PM_2010_jar, method="PCoA", distance=bray_PM_2010_jar)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_jar, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010jar.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+## BRAY - Picudas
+rt.pcoa = ordinate(PM_2010_pic, method="PCoA", distance=bray_PM_2010_pic)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_pic, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2010pic.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+## UUNI
+## Bocana
+rt.pcoa = ordinate(PM_2010_boc, method="PCoA", distance=uuni_PM_2010_boc)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_boc, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010boc.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+
+## UUNI - Jardines
+rt.pcoa = ordinate(PM_2010_jar, method="PCoA", distance=uuni_PM_2010_jar)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_jar, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010jar.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+## UUNI - Picudas
+rt.pcoa = ordinate(PM_2010_pic, method="PCoA", distance=uuni_PM_2010_pic)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2010_pic, rt.pcoa, "samples", color="Health_State", shape = "General_time") + stat_ellipse(level = 0.90,type = "t",aes(group=General_time), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2010pic.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+```
+
+
+## Ofav x PM x 2008
+```{r}
+# BRAY - health state
+rt.pcoa = ordinate(PM_2008_ofav, method="PCoA", distance=bray_PM_2008_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2008_ofav, rt.pcoa, "samples", color="Health_State") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_PM2008ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI - health state
+rt.pcoa = ordinate(PM_2008_ofav, method="PCoA", distance=uuni_PM_2008_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(PM_2008_ofav, rt.pcoa, "samples", color="Health_State") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors_PM2008)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_PM2008ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+
+```
+
+## Ofav x USVI x 2011
+```{r}
+# BRAY - Location
+rt.pcoa = ordinate(USVI_2011_ofav, method="PCoA", distance=bray_USVI_2011_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2011ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+# BRAY - Health state + location
+rt.pcoa = ordinate(USVI_2011_ofav, method="PCoA", distance=bray_USVI_2011_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2011ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+# UUNI - location
+rt.pcoa = ordinate(USVI_2011_ofav, method="PCoA", distance=uuni_USVI_2011_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVI2011ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+# UUNI - health state + location
+rt.pcoa = ordinate(USVI_2011_ofav, method="PCoA", distance=uuni_USVI_2011_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2011_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVI2011ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+```
+
+## Ofav x USVI x 2013
+```{r}
+# BRAY - location
+rt.pcoa = ordinate(USVI_2013_ofav, method="PCoA", distance=bray_USVI_2013_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2013_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2013ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# BRAY - health state + location
+rt.pcoa = ordinate(USVI_2013_ofav, method="PCoA", distance=bray_USVI_2013_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2013_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_bray_USVI2013ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI - location
+rt.pcoa = ordinate(USVI_2013_ofav, method="PCoA", distance=uuni_USVI_2013_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2013_ofav, rt.pcoa, "samples", color="Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Location), linetype = 2) + ggtheme + geom_point(size = 4)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVI2013ofav.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+# UUNI - health state + location
+rt.pcoa = ordinate(USVI_2013_ofav, method="PCoA", distance=uuni_USVI_2013_ofav)
+plot_scree(rt.pcoa, "Screen plot")
+## PCoA ordination
+## Define shapes
+pcoa<-0
+pcoa <- plot_ordination(USVI_2013_ofav, rt.pcoa, "samples", color="Health_State", shape = "Location") + stat_ellipse(level = 0.90,type = "t",aes(group=Health_State), linetype = 2) + ggtheme + geom_point(size = 4) + scale_color_manual(values = ofav_colors)
+pcoa
+pdf("output/pcoa_2021_04/PCoA_uuni_USVI2011ofav_healthlocation.pdf",width=9,height=5)
+pcoa
+dev.off()
+
+
+```
+
+
+
+
+# VIOLIN ALPHA DIVERSITY PLOTS using microbiomeSeq
+## Apal
+### All (HH, HD, and D for both diseases)
+```{r}
+p<-plot_anova_diversity(apal, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = apal_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_apalAll_microbiomeSeq.pdf")
+p
+dev.off()
+
+```
+
+## Ofav
+### All (HH, HD, and D for both diseases)
+```{r}
+p<-plot_anova_diversity(ofav, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavAll_microbiomeSeq.pdf")
+p
+dev.off()
+```
+
+### PM 2010
+```{r}
+## By location
+p<-plot_anova_diversity(PM_2010_ofav, method = c("richness","simpson", "shannon"),grouping_column =  "Location",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavPM2010location_microbiomeSeq.pdf")
+p
+dev.off()
+
+## By health state
+p<-plot_anova_diversity(PM_2010_ofav, method = c("richness","simpson", "shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavPM2010health_microbiomeSeq.pdf")
+p
+dev.off()
+
+## Early
+p<-plot_anova_diversity(PM_2010_early, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavPM2010early_microbiomeSeq.pdf")
+p
+dev.off()
+
+## Late
+p<-plot_anova_diversity(PM_2010_late, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavPM2010late_microbiomeSeq.pdf")
+p
+dev.off()
+
+```
+
+### PM 2008
+```{r}
+# By health state
+p<-plot_anova_diversity(PM_2008_ofav, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors_PM2008)
+print(p)
+pdf("output/adiv_2021_04/merged_Adiv_ofavPM2008health_microbiomeSeq.pdf")
+p
+dev.off()
+
+```
+
+### USVI 2013
+```{r}
+# By health state
+p<-plot_anova_diversity(USVI_2013_ofav, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavUSVI2013health_microbiomeSeq.pdf")
+p
+dev.off()
+
+
+# By location
+p<-plot_anova_diversity(USVI_2013_ofav, method = c("richness","shannon"),grouping_column =  "Location",pValueCutoff=0.05)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavUSVI2013location_microbiomeSeq.pdf")
+p
+dev.off()
+
+```
+
+# Ofav USVI 2011
+```{r}
+# By health state
+p<-plot_anova_diversity(USVI_2011_ofav, method = c("richness","shannon"),grouping_column =  "Health_State",pValueCutoff=0.05) + scale_color_manual(values = ofav_colors)
+print(p)
+pdf("output/adiv_2021_04/Adiv_ofavUSVI2011health_microbiomeSeq.pdf")
+p
+dev.off()
+
+# By location
+p<-plot_anova_diversity(USVI_2011_ofav, method = c("richness", "shannon"),grouping_column =  "Location",pValueCutoff=0.05)
+print(p)
+pdf("output/adiv_2021_04/Adiv_Violin_ofavUSVI2011location_microbiomeSeq.pdf")
+p
+dev.off()
+
+```
+
+
+# LOGFOLD CHANGE USING DESEQ
+## WBD
+```{r}
+# DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(WBD_HH, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","WB","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(WBD_HH)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_ApalWBD.txt",sep="\t")
+
+
+# Plot
+## Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_WBD <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+
+log_WBD
+
+pdf("output/logfold_2021_04/Logfold_WBD_numerator_2021_03_04.pdf")
+log_WBD
+dev.off()
+
+```
+
+## WPx
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(Wpox_HH, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","WPx","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(Wpox_HH)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_ApalWpox.txt",sep="\t")
+
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_Wpox <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+log_Wpox
+
+pdf("output/logfold_2021_04/Logfold_Wpox_numerator_2021_03_04.pdf")
+log_Wpox
+dev.off()
+
+```
+
+## YBD
+### YBD PM 2008
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(YBD_HH_PM2008, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","YBD","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(YBD_HH_PM2008)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_OfavYBDPM2008.txt",sep="\t")
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_YBDPM2008 <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+log_YBDPM2008
+
+pdf("output/logfold_2021_04/Logfold_YBDPM2008_numerator.pdf")
+log_YBDPM2008
+dev.off()
+
+```
+
+### YBD PM 2010
+#### All timepoints
+```{r}
+# No diff abundances
+
+```
+
+#### Early
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(PM_2010_early, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","YBD","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(PM_2010_early)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_OfavPM2010early.txt",sep="\t")
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_PM2010early <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+log_PM2010early
+
+pdf("output/logfold_2021_04/Logfold_PM2010early_numerator.pdf")
+log_PM2010early
+dev.off()
+```
+
+#### Late
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(PM_2010_late, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","YBD","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(PM_2010_late)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_OfavPM2010late.txt",sep="\t")
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_PM2010late <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+log_PM2010late
+
+pdf("output/logfold_2021_04/Logfold_PM2010late_numerator.pdf")
+log_PM2010late
+dev.off()
+```
+
+### YBD USVI 2011
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(YBD_HH_USVI2011, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","YBD","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(YBD_HH_USVI2011)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_OfavYBDUSVI2011.txt",sep="\t")
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_YBDUSVI2011 <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+log_YBDUSVI2011
+
+pdf("output/logfold_2021_04/Logfold_YBDUSVI2011_numerator_2021_03_04.pdf")
+log_YBDUSVI2011
+dev.off()
+
+```
+
+### YBD USVI 2013
+```{r}
+# No diff abundances
+```
+
+
+## WPL
+### WPL USVI 2011
+```{r}
+#DESeq- requires absolute counts, not relative proportions
+deseqdata<-phyloseq_to_deseq2(WPL_HH_USVI2011, ~Health_State)
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans<-apply(counts(deseqdata),1,gm_mean)
+deseqdata<-estimateSizeFactors(deseqdata,geoMeans=geoMeans)
+deseqdata<-DESeq(deseqdata,fitType="local")
+res<-results(deseqdata,contrast=c("Health_State","WPl","H"))
+alpha<-0.05
+sigtab<-res[which(res$padj<alpha),]
+sigtab<-cbind(as(sigtab,"data.frame"),as(tax_table(WPL_HH_USVI2011)[rownames(sigtab),],"matrix"))
+head(sigtab)
+write.table(sigtab,"output/logfold_2021_04/Logfold_SidDif_OfavWPLUSVI2011.txt",sep="\t")
+
+
+# Plot Results
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Family))
+# Order order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Order, function(x) max(x))
+#x = sort(x, TRUE)
+sigtabgen$Order = factor(as.character(sigtabgen$Order), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+#x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+log_WPLUSVI2011 <- ggplot(sigtabgen, aes(y=Family, x=log2FoldChange, color=Order)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5) +
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.text.x = element_text(size=12))+
+  theme(axis.text.y = element_text(size=12)))
+
+
+log_WPLUSVI2011
+
+pdf("output/logfold_2021_04/Logfold_WPLUSVI2011_numerator_2021_03_04.pdf")
+log_WPLUSVI2011
+dev.off()
+
+```
+
+
+# LINE PLOTS
+
+## Function code - CREDIT: https://gist.github.com/fawda123/5281518
+```{r}
+plot.qual<-function(x,x.locs=c(0.01,0.99),y.locs=c(0,1),steps=NULL,sp.names=NULL,dt.tx=T,rsc=T,
+	ln.st=NULL,rs.ln=c(3,15),ln.cl='RdYlGn',alpha=0.7,leg=T,rnks=FALSE,...){
+
+	require(RColorBrewer)
+	require(scales)
+	
+	if(length(x.locs) != 2 | length(y.locs) != 2) 
+		stop('x and y dimensions must be two-element vectors')
+	
+	if(x.locs[1]<0 | x.locs[2]>1 | y.locs[1]<0 | y.locs[2]>1) 
+		stop('x and y dimensions must in range of 0--1')
+ 
+	dim.x<-c(0,1) #plot dims x
+	dim.y<-c(0,1) #plot dims y
+	wrn.val<-F
+ 
+	x[,1]<-as.character(x[,1]) 
+	tot.sp<-ncol(x)-1
+	sp.col<-2:ncol(x)
+	
+	#rescale if T, sort legend for later
+	sp.orig<-x[,sp.col]
+	if(length(rs.ln)==1) rsc<-F
+	if(rsc) x[,sp.col]<-rescale(as.matrix(x[,sp.col]),rs.ln)
+	if(rsc==F & leg) leg<-F #no legend if line widths aren't rescaled
+	
+	#reorder species columns, add rank as integer
+	first.ord<-order(x[1,sp.col],decreasing=T)
+	x[,sp.col]<-x[,sp.col][,first.ord]
+	names(x)[sp.col]<-names(x)[sp.col][first.ord]
+	names(x)[sp.col]<-paste(1:tot.sp,names(x)[sp.col],sep='. ')
+	
+	#list of spp by date, arranged in decreasing order for each date
+	dt.dat.srt<-vector('list',nrow(x))
+	names(dt.dat.srt)<-x[,1]
+	for(val in 1:nrow(x)){
+		tmp<-t(x[val,sp.col])
+		tmp<-tmp[order(tmp,decreasing=T),,drop=F]
+		dt.dat.srt[[val]]<-tmp
+		}
+	
+	#initiate plot object
+ 	plot(dim.x,dim.y,type='n',axes=F,xlab='',ylab='',...) 
+	
+	#subset for steps, if provided
+	if(!is.null(steps)) dt.dat.srt<-dt.dat.srt[names(dt.dat.srt) %in% steps]
+	
+	#plot legend
+	if(leg){
+		y.locs[1]<-0.05*diff(y.locs)+y.locs[1]
+		leg.txt<-format(round(seq(min(sp.orig),max(sp.orig),length=5),2),nsmall=2,digits=2)
+		leg.wds<-seq(rs.ln[1],rs.ln[2],length=5)
+		legend('bottom',(y.locs[1]-y.olds)/2,col=alpha('black',alpha),lwd=leg.wds,legend=leg.txt,bty='n',
+			horiz=T)
+		}	
+	
+	#x locations
+	x.vals<-rep(seq(x.locs[1],x.locs[2],length=length(dt.dat.srt)),each=tot.sp)
+	x.vals<-split(x.vals,x.vals)
+	
+	#y locations, rearranged in loop, exception if dates are plotted
+	if(dt.tx) y.vals<-rev(seq(y.locs[1],y.locs[2],length=tot.sp+1))[-1]
+	else y.vals<-rev(seq(y.locs[1],y.locs[2],length=tot.sp))
+	
+	#get line colors
+	if(length(ln.cl)==1)
+		if(ln.cl %in% row.names(brewer.pal.info)){
+			pal.num<-brewer.pal.info[row.names(brewer.pal.info) == ln.cl,1]
+			ln.cl<-brewer.pal(pal.num,ln.cl)
+			}
+	line.cols<-alpha(colorRampPalette(ln.cl)(tot.sp),alpha)
+	
+	#define distance of lines from labels
+	if(is.null(ln.st)){
+		str.max<-max(strwidth(row.names(dt.dat.srt[[1]])))
+		if(diff(x.locs)-length(dt.dat.srt)*str.max < 0){
+			warning('not enough space for lines between columns')
+			wrn.val<-T
+			}
+		else
+			ln.st<-0.2*str.max + str.max/2
+		}
+	
+	for(val in 1:(length(dt.dat.srt)-1)){
+		
+		#temp data to plot
+		plt.tmp<-dt.dat.srt[c(val,val+1)]
+		x.tmp<-x.vals[c(val,val+1)]
+	
+		#plot temp text for column, remove spp if rnks
+		rowtxt <- row.names(plt.tmp[[1]])
+    if(rnks)
+	    rowtxt <- gsub('([1-9]*)\\..*', '\\1', rowtxt) 
+		text(x.tmp[[1]],y.vals,rowtxt)
+ 
+		if(val == length(dt.dat.srt)-1){
+		  rowtxt <- row.names(plt.tmp[[2]])
+		  if(rnks)
+	      rowtxt <- gsub('([1-9]*)\\..*', '\\1', rowtxt) 
+			text(x.tmp[[2]],y.vals,rowtxt)
+			if(dt.tx){
+				dt.txt<-substitute(italic(x),list(x=names(plt.tmp)[2]))
+				text(unique(x.tmp[[2]]),y.locs[2],dt.txt)
+				}
+			}	
+		
+		if(dt.tx){
+			dt.txt<-substitute(italic(x),list(x=names(plt.tmp)[1]))
+			text(unique(x.tmp[[1]]),y.locs[2],dt.txt)
+			}
+		
+		srt.ln.y<-match(row.names(plt.tmp[[1]]),row.names(plt.tmp[[2]]))
+		
+		#if no line rescale, use first element of rs.ln
+		if(rsc) lwd.val<-plt.tmp[[1]][,1]
+		else lwd.val<-rep(rs.ln[1],tot.sp)
+		
+		#vector for species selection of line segments
+		if(is.null(sp.names)) sel.sp<-rep(T,tot.sp)
+		else{
+			sel.names<-unlist(lapply(strsplit(row.names(plt.tmp[[1]]),' '),function(x) x[2]))
+			sel.sp<-(sel.names %in% sp.names)
+			}
+			
+		#for lines
+		if(!wrn.val)
+			segments(
+				x.tmp[[1]][sel.sp]+ln.st,
+				y.vals[sel.sp],
+				x.tmp[[2]][sel.sp]-ln.st,
+				y.vals[srt.ln.y][sel.sp],
+				col=line.cols[sel.sp],
+				lwd=lwd.val[sel.sp]
+				)
+		
+		#resort color vector for next colummn
+		srt.cl.y<-match(row.names(plt.tmp[[2]]),row.names(plt.tmp[[1]]))
+		line.cols<-line.cols[srt.cl.y]
+		
+		}
+	
+	}
+```
+
+
+## WBD
+```{r}
+# Viridis colors
+c('#404788FF','#1F968BFF','#FDE725FF')
+
+# 100
+WBD_top100_fromHH_list <- names(sort(taxa_sums(HH_apal), TRUE)[1:100])
+WBD_top100_fromHH <- prune_taxa(WBD_top100_fromHH_list, WBD_HHDHD)
+## Export for editing and processing outside of R
+write.csv(otu_table(WBD_top100_fromHH), file = "output/line_plot_2021_04/WBD/WBD_top100_fromHH_otu.csv")
+write.csv(tax_table(WBD_top100_fromHH), file = "output/line_plot_2021_04/WBD/WBD_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+WBD_top100_fromHH_fam <- read.table("output/line_plot/WBD/top100_fromHH/WBD_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/WBD/Lineplot_WBD_top100_fromHH_names_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(WBD_top100_fromHH_fam,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c("#44016b", "#1e70aa","#2eac63"))
+dev.off()
+
+## Line plot with visible lines
+WBD_top100_fromHH_fam <- read.table("output/line_plot/WBD/top100_fromHH/WBD_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/WBD/Lineplot_WBD_top100_fromHH_lines_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(WBD_top100_fromHH_fam,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c("#44016b", "#1e70aa","#2eac63"))
+dev.off()
+
+```
+
+## Wpox
+```{r}
+# 100
+Wpox_top100_fromHH_list <- names(sort(taxa_sums(HH_apal), TRUE)[1:100])
+Wpox_top100_fromHH <- prune_taxa(Wpox_top100_fromHH_list, Wpox_HHDHD)
+## Export for editing and processing outside of R
+write.csv(otu_table(Wpox_top100_fromHH), file = "output/line_plot/Wpox//Wpox_top100_fromHH_otu.csv")
+write.csv(tax_table(Wpox_top100_fromHH), file = "output/line_plot/Wpox/Wpox_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+Wpox_top100_fromHH_2xmeans <- read.table("output/line_plot/Wpox/Wpox_top100_fromHH_FamMeans2.txt", sep="\t", header=T)
+pdf("output/line_plot/Wpox/Lineplot_Wpox_top100_fromHH_names_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(Wpox_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c("#44016b", "#1e70aa","#2eac63"))
+dev.off()
+
+## Line plot with visible lines
+Wpox_top100_fromHH_2xmeans <- read.table("output/line_plot/Wpox/Wpox_top100_fromHH_FamMeans2.txt", sep="\t", header=T)
+pdf("output/line_plot/Wpox/Lineplot_Wpox_top100_fromHH_lines_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(Wpox_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c("#44016b", "#1e70aa","#2eac63"))
+dev.off()
+
+```
+
+## List of Ofav subsets
+### Ofav YBD HHDHD by region x year
+YBD_HHDHD_PM2008 # 12 samples
+YBD_HHDHD_PM2010 # 75 samples
+YBD_HHDHD_USVI2013 # 19 samples
+YBD_HHDHD_USVI2011 # 27 samples
+YBD_HHDHD_CUR2011 # 16 samples
+
+### Ofav WPL HHDHD by region x year
+WPL_HHDHD_PM2010 # 7 samples, not enough
+WPL_HHDHD_USVI2013 # 10 samples, just barely
+WPL_HHDHD_USVI2011 # 27 samples
+WPL_HHDHD_CUR2011 # 7 samples, not enough
+
+
+## YBD PM 2008 - 12 samples
+```{r}
+# 100
+YBD_PM2008_top100_fromHH_list <- names(sort(taxa_sums(HH_PM_2008), TRUE)[1:100])
+YBD_PM2008_top100_fromHH <- prune_taxa(YBD_PM2008_top100_fromHH_list, YBD_HHDHD_PM2008)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_PM2008_top100_fromHH), file = "output/line_plot/YBD//YBD_PM2008_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_PM2008_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2008_top100_fromHH_tax.csv")
+
+
+## Line plot with visible names
+YBD_PM2008_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2008/top100_fromHH/YBD_PM2008_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2008/top100_fromHH/Lineplot_YBD_PM2008_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2008_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+## Line plot with visible lines
+YBD_PM2008_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2008/top100_fromHH/YBD_PM2008_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2008/top100_fromHH/Lineplot_YBD_PM2008_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2008_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+```
+
+
+## YBD PM 2010
+```{r}
+# 100
+YBD_PM2010_top100_fromHH_list <- names(sort(taxa_sums(HH_PM_2010), TRUE)[1:100])
+YBD_PM2010_top100_fromHH <- prune_taxa(YBD_PM2010_top100_fromHH_list, YBD_HHDHD_PM2010)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_PM2010_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_PM2010_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+YBD_PM2010_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+## Line plot with visible lines
+YBD_PM2010_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+
+# By time point, early vs late
+## Subsetting
+HH_PM_2010_E <- subset_samples(HH_PM_2010, General_time == "Early")
+HH_PM_2010_L <- subset_samples(HH_PM_2010, General_time == "Late")
+YBD_HHDHD_PM2010_E <- subset_samples(YBD_HHDHD_PM2010, General_time == "Early")
+YBD_HHDHD_PM2010_L <- subset_samples(YBD_HHDHD_PM2010, General_time == "Late")
+
+YBD_PM2010_E_top100_fromHH_list <- names(sort(taxa_sums(HH_PM_2010_E), TRUE)[1:100])
+YBD_PM2010_E_top100_fromHH <- prune_taxa(YBD_PM2010_E_top100_fromHH_list, YBD_HHDHD_PM2010_E)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_PM2010_E_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_E_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_PM2010_E_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_E_top100_fromHH_tax.csv")
+
+YBD_PM2010_L_top100_fromHH_list <- names(sort(taxa_sums(HH_PM_2010_L), TRUE)[1:100])
+YBD_PM2010_L_top100_fromHH <- prune_taxa(YBD_PM2010_L_top100_fromHH_list, YBD_HHDHD_PM2010_L)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_PM2010_L_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_L_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_PM2010_L_top100_fromHH), file = "output/line_plot/YBD/YBD_PM2010_L_top100_fromHH_tax.csv")
+
+## Early
+### Line plot with visible names
+YBD_PM2010_E_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_E_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_E_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_E_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+### Line plot with visible lines
+YBD_PM2010_E_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_E_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_E_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_E_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+## Late
+### Line plot with visible names
+YBD_PM2010_L_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_L_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_L_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_L_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+### Line plot with visible lines
+YBD_PM2010_L_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/PM2010/top100_fromHH/YBD_PM2010_L_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/PM2010/top100_fromHH/Lineplot_YBD_PM2010_L_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_PM2010_L_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+
+```
+
+
+## YBD USVI 2013
+```{r}
+# 100
+YBD_USVI2013_top100_fromHH_list <- names(sort(taxa_sums(HH_USVI_2013), TRUE)[1:100])
+YBD_USVI2013_top100_fromHH <- prune_taxa(YBD_USVI2013_top100_fromHH_list, YBD_HHDHD_USVI2013)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_USVI2013_top100_fromHH), file = "output/line_plot/YBD/YBD_USVI2013_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_USVI2013_top100_fromHH), file = "output/line_plot/YBD/YBD_USVI2013_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+YBD_USVI2013_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/USVI2013/top100_fromHH/YBD_USVI2013_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/USVI2013/top100_fromHH/Lineplot_YBD_USVI2013_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_USVI2013_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+## Line plot with visible lines
+YBD_USVI2013_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/USVI2013/top100_fromHH/YBD_USVI2013_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/USVI2013/top100_fromHH/Lineplot_YBD_USVI2013_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_USVI2013_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+
+```
+
+
+## YBD USVI 2011
+```{r}
+# 100
+YBD_USVI2011_top100_fromHH_list <- names(sort(taxa_sums(HH_USVI_2011_ofav), TRUE)[1:100])
+YBD_USVI2011_top100_fromHH <- prune_taxa(YBD_USVI2011_top100_fromHH_list, YBD_HHDHD_USVI2011)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_USVI2011_top100_fromHH), file = "output/line_plot/YBD/YBD_USVI2011_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_USVI2011_top100_fromHH), file = "output/line_plot/YBD/YBD_USVI2011_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+YBD_USVI2011_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/USVI2011/top100_fromHH/YBD_USVI2011_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/USVI2011/top100_fromHH/Lineplot_YBD_USVI2011_top100_fromHH_names_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_USVI2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c("#fb0007","#fe900b","#fefa09"))
+dev.off()
+
+## Line plot with visible lines
+YBD_USVI2011_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/USVI2011/top100_fromHH/YBD_USVI2011_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/USVI2011/top100_fromHH/Lineplot_YBD_USVI2011_top100_fromHH_lines_colors.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_USVI2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c("#fb0007","#fe900b","#fefa09"))
+dev.off()
+
+
+```
+
+
+## YBD CUR 2011
+```{r}
+# 100
+YBD_CUR2011_top100_fromHH_list <- names(sort(taxa_sums(HH_Curacao), TRUE)[1:100])
+YBD_CUR2011_top100_fromHH <- prune_taxa(YBD_CUR2011_top100_fromHH_list, YBD_HHDHD_CUR2011)
+## Export for editing and processing outside of R
+write.csv(otu_table(YBD_CUR2011_top100_fromHH), file = "output/line_plot/YBD/YBD_CUR2011_top100_fromHH_otu.csv")
+write.csv(tax_table(YBD_CUR2011_top100_fromHH), file = "output/line_plot/YBD/YBD_CUR2011_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+YBD_CUR2011_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/CUR2011/YBD_CUR2011_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/CUR2011/Lineplot_YBD_CUR2011_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_CUR2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+## Line plot with visible lines
+YBD_CUR2011_top100_fromHH_2xmeans <- read.table("output/line_plot/YBD/CUR2011/YBD_CUR2011_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/YBD/CUR2011/Lineplot_YBD_CUR2011_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(YBD_CUR2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c('#404788FF','#1F968BFF','#FDE725FF'))
+dev.off()
+
+
+
+```
+
+
+
+## WPL USVI 2011
+```{r}
+# 100
+WPL_USVI2011_top100_fromHH_list <- names(sort(taxa_sums(HH_USVI_2011_ofav), TRUE)[1:100])
+WPL_USVI2011_top100_fromHH <- prune_taxa(WPL_USVI2011_top100_fromHH_list, WPL_HHDHD_USVI2011)
+## Export for editing and processing outside of R
+write.csv(otu_table(WPL_USVI2011_top100_fromHH), file = "output/line_plot/WPL/WPL_USVI2011_top100_fromHH_otu.csv")
+write.csv(tax_table(WPL_USVI2011_top100_fromHH), file = "output/line_plot/WPL/WPL_USVI2011_top100_fromHH_tax.csv")
+
+## Line plot with visible names
+WPL_USVI2011_top100_fromHH_2xmeans <- read.table("output/line_plot/WPL/WPL_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/WPL/USVI2011/Lineplot_WPL_USVI2011_top100_fromHH_names.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(WPL_USVI2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.1,0.9),ln.cl = c("#fb0007","#fe900b","#fefa09"))
+dev.off()
+
+## Line plot with visible lines
+WPL_USVI2011_top100_fromHH_2xmeans <- read.table("output/line_plot/WPL/WPL_top100_fromHH_FamMeans.txt", sep="\t", header=T)
+pdf("output/line_plot/WPL/USVI2011/Lineplot_WPL_USVI2011_top100_fromHH_lines.pdf")
+par(mar=numeric(4),family='serif')
+plot.qual(WPL_USVI2011_top100_fromHH_2xmeans,rs.ln=c(3,15),x.locs=c(0.005,0.995),ln.cl = c("#fb0007","#fe900b","#fefa09"))
+dev.off()
+
+```
+
+
+
+
