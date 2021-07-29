@@ -4,7 +4,7 @@ This repository contains all of the code associated with and the analyses perfor
 #
 The Coral_Multidisease_Microbiome_QIIME2_PreProcessing.txt file contains all bash code used to run QIIME2 and process the raw 16S DNA sequences.
 
-INPUT: Data are unpublished.
+INPUT: Raw data are unpublished.
 
 OUTPUT: ASV table, representative sequences file, taxonomy file, and a phylogenetic tree. 
 
