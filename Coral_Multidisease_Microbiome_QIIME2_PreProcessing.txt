@@ -1,0 +1,387 @@
+# MULTIDISEASE MICROBIOME 16S PRE-PROCESSING 
+## Performed using QIIME2
+
+
+# STEP 1: Unpairing interleaved files
+
+## First, file names must be changed to simple sample names.
+### PYTHON SCRIPT USED
+import os
+import csv
+
+directory = '/directory/containing/sequences'
+with open(f'{directory}/file_containing_oldnames_and_newnames.csv', encoding = "utf-8-sig") as f:
+    lines = csv.reader(f)
+    for line in lines:
+        os.rename(f'{directory}/{line[0]}', f'{directory}/{line[1]}')
+
+## Fastq files are interleaved, so they have to be separated to be able to be analazyed using QIIME2. QIIME2 does not offer a script for this, but QIIME1 does. After renaming, fastq files were uploaded to Nautilus and interleaved files were separated using the extract_reads_from_interleaved_file.py command.
+### RESULT: folders for every sample with one file named forward_reads.fastq and another named reverse_reads.fastq. Names have to be changed to reflect the sample names to be able to upload them into QIIME 2 for processing. 
+
+## New file names must use the Casava naming convention. Underscores specifically denote specific sections of the file name and so cannot be used in the actual sample name portion of the file name.
+### Forward reads:
+sample-name_barcode_L001_R1_001
+### Reverse reads:
+sample-name_barcode_L001_R2_001
+
+## All files must also be gzipped (files were unzipped for unpairing). Fix: navigate to 16S_all_unpaired_renamed, enter:
+gzip *
+
+
+# STEP 2: QIIME2 import
+
+## Files must be imported using the Casava 1.8 Demultiplexed Unpaired format, since it is the only format that allows for uploading the demultiplexed unpaired files belonging to each sample
+## All files should now  be gzipped and ready for upload
+
+## Following commands were used for upload
+### Attach to Tmux session created for 16S processing
+tmux attach -t muldis_16S
+conda activate qiime2-2020.6
+### Upload command
+#### Plate 1
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path 16S_all_unpaired_renamed/plate1_1032370/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path plate1_1032370_results/plate1_demux_paired_end.qza
+#### Plate 2
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path 16S_all_unpaired_renamed/plate2_1032373/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path plate2_1032373_results/plate2_demux_paired_end.qza
+#### Plate 3
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path 16S_all_unpaired_renamed/plate3_1032376/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path plate3_1032376_results/plate3_demux_paired_end.qza
+#### Plate 4
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path 16S_all_unpaired_renamed/plate4_1032379/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path plate4_1032379_results/plate4_demux_paired_end.qza
+#### Plate 5
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path 16S_all_unpaired_renamed/plate5_1046636/ \
+  --input-format CasavaOneEightSingleLanePerSampleDirFmt \
+  --output-path plate5_1046636_results/plate5_demux_paired_end.qza
+
+
+## Unpaired reads have been imported as demux_paired_end.qza
+
+## Create a qzv vile for visualization of read quality using the QIIME2 viewer
+### Plate 1
+qiime demux summarize \
+--i-data plate1_1032370_results/plate1_demux_paired_end.qza \
+--o-visualization plate1_1032370_results/plate1_demux_paired_end.qzv
+### Plate 2
+qiime demux summarize \
+--i-data plate2_1032373_results/plate2_demux_paired_end.qza \
+--o-visualization plate2_1032373_results/plate2_demux_paired_end.qzv
+### Plate 3
+qiime demux summarize \
+--i-data plate3_1032376_results/plate3_demux_paired_end.qza \
+--o-visualization plate3_1032376_results/plate3_demux_paired_end.qzv
+### Plate 4
+qiime demux summarize \
+--i-data plate4_1032379_results/plate4_demux_paired_end.qza \
+--o-visualization plate4_1032379_results/plate4_demux_paired_end.qzv
+### Plate 5
+qiime demux summarize \
+--i-data plate5_1046636_results/plate5_demux_paired_end.qza \
+--o-visualization plate5_1046636_results/plate5_demux_paired_end.qzv
+
+
+# STEP 3: Trimming using DADA2
+
+## First, check to make sure that the primers used for amplification are not present in our reads. FastQC indicated that the Illumina universal adapters were present. The sequence for this adapter is AGATCGGAAGAG. Primers will also be removed
+
+## Plate 1
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences plate1_1032370_results/plate1_demux_paired_end.qza \
+--p-cores 10 \
+--p-adapter-f AGATCGGAAGAG \
+--p-adapter-r AGATCGGAAGAG  \
+--p-front-f GTGYCAGCMGCCGCGGTAA \
+--p-front-r CCGYCAATTYMTTTRAGTTT \
+--o-trimmed-sequences plate1_1032370_results/plate1_primeradapter_trimmed_demux_paired_end.qza \
+--verbose \
+&> plate1_1032370_results/plate1_primer_trimming.log 
+
+
+## Plate 2
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences plate2_1032373_results/plate2_demux_paired_end.qza \
+--p-cores 10 \
+--p-adapter-f AGATCGGAAGAG \
+--p-adapter-r AGATCGGAAGAG  \
+--p-front-f GTGYCAGCMGCCGCGGTAA \
+--p-front-r CCGYCAATTYMTTTRAGTTT \
+--o-trimmed-sequences plate2_1032373_results/plate2_primeradapter_trimmed_demux_paired_end.qza \
+--verbose \
+&> plate2_1032373_results/plate2_primer_trimming.log
+
+
+## Plate 3
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences plate3_1032376_results/plate3_demux_paired_end.qza \
+--p-cores 10 \
+--p-adapter-f AGATCGGAAGAG \
+--p-adapter-r AGATCGGAAGAG  \
+--p-front-f GTGYCAGCMGCCGCGGTAA \
+--p-front-r CCGYCAATTYMTTTRAGTTT \
+--o-trimmed-sequences plate3_1032376_results/plate3_primeradapter_trimmed_demux_paired_end.qza \
+--verbose \
+&> plate3_1032376_results/plate3_primer_trimming.log 
+
+
+## Plate 4
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences plate4_1032379_results/plate4_demux_paired_end.qza \
+--p-cores 10 \
+--p-adapter-f AGATCGGAAGAG \
+--p-adapter-r AGATCGGAAGAG  \
+--p-front-f GTGYCAGCMGCCGCGGTAA \
+--p-front-r CCGYCAATTYMTTTRAGTTT \
+--o-trimmed-sequences plate4_1032379_results/plate4_primeradapter_trimmed_demux_paired_end.qza \
+--verbose \
+&> plate4_1032379_results/plate4_primer_trimming.log 
+
+
+## Plate 5
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences plate5_1046636_results/plate5_demux_paired_end.qza \
+--p-cores 10 \
+--p-adapter-f AGATCGGAAGAG \
+--p-adapter-r AGATCGGAAGAG  \
+--p-front-f GTGYCAGCMGCCGCGGTAA \
+--p-front-r CCGYCAATTYMTTTRAGTTT \
+--o-trimmed-sequences plate5_1046636_results/plate4_primeradapter_trimmed_demux_paired_end.qza \
+--verbose \
+&> plate5_1046636_results/plate5_primer_trimming.log 
+
+
+## Create a new qzv vile for visualization of read quality post adapter removal using the QIIME2 viewer
+### Plate 1
+qiime demux summarize \
+--i-data plate1_1032370_results/plate1_primeradapter_trimmed_demux_paired_end.qza \
+--o-visualization plate1_1032370_results/plate1_no_primersadapters.qzv
+
+### Plate 2
+qiime demux summarize \
+--i-data plate2_1032373_results/plate2_primeradapter_trimmed_demux_paired_end.qza \
+--o-visualization plate2_1032373_results/plate2_no_primersadapters.qzv
+
+### Plate 3
+qiime demux summarize \
+--i-data plate3_1032376_results/plate3_primeradapter_trimmed_demux_paired_end.qza \
+--o-visualization plate3_1032376_results/plate3_no_primersadapters.qzv
+
+### Plate 4
+qiime demux summarize \
+--i-data plate4_1032379_results/plate4_primeradapter_trimmed_demux_paired_end.qza \
+--o-visualization plate4_1032379_results/plate4_no_primersadapters.qzv
+
+### Plate 5
+mv plate4_primeradapter_trimmed_demux_paired_end.qza plate5_primeradapter_trimmed_demux_paired_end.qza
+qiime demux summarize \
+--i-data plate5_1046636_results/plate5_primeradapter_trimmed_demux_paired_end.qza \
+--o-visualization plate5_1046636_results/plate5_no_primersadapters.qzv
+
+
+## We will be selecting parameters based on the results shown in the Interactive Quality Plot portion of the qzv files. The following commands were used:
+
+### Plate1
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs plate1_1032370_results/plate1_primeradapter_trimmed_demux_paired_end.qza \
+--o-representative-sequences plate1_1032370_results/plate1_rep-seqs.qza \
+--o-denoising-stats plate1_1032370_results/plate1_denoising-stats.qza \
+--p-trunc-len-f 272 \
+--p-trunc-len-r 225 \
+--o-table plate1_1032370_results/plate1_dada2_table.qza \
+--p-n-threads 24 \
+--verbose \
+&> plate1_1032370_results/plate1_DADA2_denoising.log
+
+### Plate2
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs plate2_1032373_results/plate2_primeradapter_trimmed_demux_paired_end.qza \
+--o-representative-sequences plate2_1032373_results/plate2_rep-seqs.qza \
+--o-denoising-stats plate2_1032373_results/plate2_denoising-stats.qza \
+--p-trunc-len-f 272 \
+--p-trunc-len-r 225 \
+--o-table plate2_1032373_results/plate2_dada2_table.qza \
+--p-n-threads 24 \
+--verbose \
+&> plate2_1032373_results/plate2_DADA2_denoising.log
+
+### Plate3
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs plate3_1032376_results/plate3_primeradapter_trimmed_demux_paired_end.qza \
+--o-representative-sequences plate3_1032376_results/plate3_rep-seqs.qza \
+--o-denoising-stats plate3_1032376_results/plate3_denoising-stats.qza \
+--p-trunc-len-f 272 \
+--p-trunc-len-r 225 \
+--o-table plate3_1032376_results/plate3_dada2_table.qza \
+--p-n-threads 24 \
+--verbose \
+&> plate3_1032376_results/plate3_DADA2_denoising.log
+
+### Plate4
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs plate4_1032379_results/plate4_primeradapter_trimmed_demux_paired_end.qza \
+--o-representative-sequences plate4_1032379_results/plate4_rep-seqs.qza \
+--o-denoising-stats plate4_1032379_results/plate4_denoising-stats.qza \
+--p-trunc-len-f 272 \
+--p-trunc-len-r 225 \
+--o-table plate4_1032379_results/plate4_dada2_table.qza \
+--p-n-threads 20 \
+--verbose \
+&> plate4_1032379_results/plate4_DADA2_denoising.log
+
+### Plate5
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs plate5_1046636_results/plate5_primeradapter_trimmed_demux_paired_end.qza \
+--o-representative-sequences plate5_1046636_results/plate5_rep-seqs.qza \
+--o-denoising-stats plate5_1046636_results/plate5_denoising-stats.qza \
+--p-trunc-len-f 272 \
+--p-trunc-len-r 225 \
+--o-table plate5_1046636_results/plate5_dada2_table.qza \
+--p-n-threads 24 \
+--verbose \
+&> plate5_1046636_results/plate5_DADA2_denoising.log
+
+## The results of the above command will be artifacts with a feature table, corresponding feature sequences, and DADA2 denoising stats. I used the commands below to generate summaries of these artifacts.
+
+### Plate1
+qiime feature-table summarize \
+  --i-table plate1_1032370_results/plate1_dada2_table.qza \
+  --o-visualization plate1_1032370_results/plate1_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data plate1_1032370_results/plate1_rep-seqs.qza \
+  --o-visualization plate1_1032370_results/plate1_rep-seqs.qzv
+qiime metadata tabulate \
+  --m-input-file plate1_1032370_results/plate1_denoising-stats.qza \
+  --o-visualization plate1_1032370_results/plate1_denoising-stats.qzv
+
+### Plate2
+qiime feature-table summarize \
+  --i-table plate2_1032373_results/plate2_dada2_table.qza \
+  --o-visualization plate2_1032373_results/plate2_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data plate2_1032373_results/plate2_rep-seqs.qza \
+  --o-visualization plate2_1032373_results/plate2_rep-seqs.qzv
+qiime metadata tabulate \
+  --m-input-file plate2_1032373_results/plate2_denoising-stats.qza \
+  --o-visualization plate2_1032373_results/plate2_denoising-stats.qzv
+
+### Plate3
+qiime feature-table summarize \
+  --i-table plate3_1032376_results/plate3_dada2_table.qza \
+  --o-visualization plate3_1032376_results/plate3_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data plate3_1032376_results/plate3_rep-seqs.qza \
+  --o-visualization plate3_1032376_results/plate3_rep-seqs.qzv
+qiime metadata tabulate \
+  --m-input-file plate3_1032376_results/plate3_denoising-stats.qza \
+  --o-visualization plate3_1032376_results/plate3_denoising-stats.qzv
+
+### Plate4
+qiime feature-table summarize \
+  --i-table plate4_1032379_results/plate4_dada2_table.qza \
+  --o-visualization plate4_1032379_results/plate4_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data plate4_1032379_results/plate4_rep-seqs.qza \
+  --o-visualization plate4_1032379_results/plate4_rep-seqs.qzv
+qiime metadata tabulate \
+  --m-input-file plate4_1032379_results/plate4_denoising-stats.qza \
+  --o-visualization plate4_1032379_results/plate4_denoising-stats.qzv
+
+### Plate5
+qiime feature-table summarize \
+  --i-table plate5_1046636_results/plate5_dada2_table.qza \
+  --o-visualization plate5_1046636_results/plate5_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data plate5_1046636_results/plate5_rep-seqs.qza \
+  --o-visualization plate5_1046636_results/plate5_rep-seqs.qzv
+qiime metadata tabulate \
+  --m-input-file plate5_1046636_results/plate5_denoising-stats.qza \
+  --o-visualization plate5_1046636_results/plate5_denoising-stats.qzv
+
+
+## Now, we have to merge the results from all of the plates
+qiime feature-table merge \
+  --i-tables plate1_1032370_results/plate1_dada2_table.qza \
+  --i-tables plate2_1032373_results/plate2_dada2_table.qza \
+  --i-tables plate3_1032376_results/plate3_dada2_table.qza \
+  --i-tables plate4_1032379_results/plate4_dada2_table.qza \
+  --i-tables plate5_1046636_results/plate5_dada2_table.qza \
+  --o-merged-table merged_dada2_table.qza
+qiime feature-table merge-seqs \
+  --i-data plate1_1032370_results/plate1_rep-seqs.qza \
+  --i-data plate2_1032373_results/plate2_rep-seqs.qza \
+  --i-data plate3_1032376_results/plate3_rep-seqs.qza \
+  --i-data plate4_1032379_results/plate4_rep-seqs.qza \
+  --i-data plate5_1046636_results/plate5_rep-seqs.qza \
+  --o-merged-data merged_rep-seqs.qza
+
+
+## Summarize the results
+qiime feature-table summarize \
+  --i-table merged_dada2_table.qza \
+  --o-visualization merged_dada2_table.qzv \
+  --m-sample-metadata-file QIIME2_16S_Mapping.tsv
+qiime feature-table tabulate-seqs \
+  --i-data merged_rep-seqs.qza \
+  --o-visualization merged_rep-seqs.qzv
+
+
+# STEP 4: Phylogenetic tree
+
+## Here we will be generating a tree for phylogenetic diversity analyses
+## The following command was executed to generate a tree:
+qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences merged_rep-seqs.qza \
+  --o-alignment merged_aligned-rep-seqs.qza \
+  --o-masked-alignment merged_masked-aligned-rep-seqs.qza \
+  --o-tree merged_unrooted-tree.qza \
+  --o-rooted-tree merged_rooted-tree.qza \
+  --p-n-threads 24
+
+
+# STEP 5: Taxonomy assignment
+
+## Here, we will be assigning taxonomy to our samples. We’ll do that using a pre-trained Naive Bayes classifier and the q2-feature-classifier plugin. This classifier was trained on the Greengenes 13_8 99% OTUs, using the V4 region. We’ll apply this classifier to our sequences, and we can generate a visualization of the resulting mapping from sequence to taxonomy.
+
+### Assign taxonomy
+qiime feature-classifier classify-sklearn \
+  --i-classifier QIIME2_wrongtax_nosepbyrun/gg-13-8-99-515-806-nb-classifier.qza \
+  --i-reads merged_rep-seqs.qza \
+  --o-classification 515_806_merged_taxonomy.qza
+
+qiime metadata tabulate \
+  --m-input-file 515_806_merged_taxonomy.qza \
+  --o-visualization 515_806_merged_taxonomy.qzv
+
+### Next, we can view the taxonomic composition of our samples with interactive bar plots. Generate those plots with the following command and then open the visualization.
+qiime taxa barplot \
+  --i-table 515_806_merged_taxonomy.qza \
+  --i-taxonomy 515_806_merged_taxonomy.qza \
+  --m-metadata-file QIIME2_16S_Mapping.tsv \
+  --o-visualization 515_806_merged_taxa-bar-plots.qzv
+
+
+
+
+
+
+
+
